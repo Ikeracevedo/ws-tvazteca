@@ -498,7 +498,7 @@ if __name__ == "__main__":
     p = sub.add_parser("login"); p.add_argument("--headless", action="store_true"); p.set_defaults(f=cmd_login)
     sub.add_parser("list").set_defaults(f=cmd_list)
     sub.add_parser("probe").set_defaults(f=cmd_probe)
-    sub.add_parser("check").set_defaults(f=cmd_check)
+    sub.add_parser("check", aliases=["verify"]).set_defaults(f=cmd_check)
     sub.add_parser("status").set_defaults(f=cmd_status)
     sub.add_parser("test-slack").set_defaults(f=cmd_test_slack)
 
