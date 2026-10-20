@@ -2,3 +2,5 @@ __pycache__/
 votabot_data/profiles/
 votabot_data/*.csv
 *.pyc
+
+.env

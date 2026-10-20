@@ -2,6 +2,8 @@ services:
   votabot:
     build: .
     restart: unless-stopped
+    env_file: .env
+    ports: ["127.0.0.1:8080:8080"]
     volumes:
       - ./votabot_data:/app/votabot_data
       - ./config.json:/app/config.json:ro
