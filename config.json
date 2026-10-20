@@ -1,0 +1,13 @@
+{
+  "evento": "capataz",
+  "target": "Rafa Mercadante",
+  "votes": null,
+  "spread": false,
+  "workers": 4,
+  "delay_min": 1.0,
+  "delay_max": 3.0,
+  "max_rounds_per_account": 100000,
+  "unique_fp": true,
+  "poll_status_every": 15,
+  "save_every": 60
+}

@@ -1,0 +1,10 @@
+services:
+  votabot:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ./votabot_data:/app/votabot_data
+      - ./config.json:/app/config.json:ro
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
