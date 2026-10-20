@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-votabot.py — Bot de votación TV Azteca (La Granja VIP)
+votabot.py — Bot de votación TV Azteca (La Granja VIP) · v2.0
 
-  python votabot.py login                 registra cuentas de Google (local, una vez)
-  python votabot.py run                   demonio: vota mientras la votación esté abierta
-  python votabot.py target "Rafa Mercadante"   cambia el concursante en caliente
-  python votabot.py evento duelo          cambia de votación en caliente
-  python votabot.py status                estado actual
-  python votabot.py list / probe / check / verify / test-slack
-
-Solo `login` necesita Playwright. El resto es requests puro.
+  python votabot.py login                       registra cuentas de Google (una vez, con navegador)
+  python votabot.py run                         arranca el demonio (vota lo que diga config.json)
+  python votabot.py duelos                      vota TODAS las mesas de 'vota' (indefinido)
+  python votabot.py vote "Rafa Mercadante" 10   elige concursante y votos por solicitud
+  python votabot.py report                      manda reporte a Slack AHORA
+  python votabot.py off / on                    pausa / reanuda (el proceso sigue vivo)
+  python votabot.py status / stats / mesas       estado, contadores y mesas detectadas
+  python votabot.py list / probe / check / test-slack
 """
 
-import argparse, csv, hashlib, json, os, random, re, signal, sys, threading, time, uuid
+import argparse, csv, hashlib, json, os, random, re, signal, sys, threading, time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -31,6 +31,7 @@ REDIRECT_CANDIDATES = ["https://vota.tvazteca.com/auth/google-callback",
 EVENTOS = {"capataz": "vota", "acompanante": "vota", "vota": "vota",
            "duelo": "lagranjavip", "granjero": "lagranjavip", "lagranjavip": "lagranjavip"}
 SLUGS_CONOCIDOS = ["vota", "lagranjavip"]
+RE_MESA = re.compile(r"^voting\d*$")
 
 UA_POOL = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -47,21 +48,35 @@ ACCOUNTS = DATA_DIR / "accounts.json"
 STATE    = DATA_DIR / "state.json"
 LOG      = DATA_DIR / "votos.csv"
 HEART    = DATA_DIR / "heartbeat.txt"
+METRICS  = DATA_DIR / "metricas.json"
 CONFIG   = Path("config.json")
 
 # ----------------------------------------------------------------- CONFIG
 DEFAULTS = {
-    "evento": "capataz", "slug": None, "target": None, "votes": None, "spread": False,
-    "workers": 4, "delay_min": 1.2, "delay_max": 3.5, "unique_fp": True,
-    "poll_status_every": 15, "save_every": 60, "reload_every": 30,
-    "descansos": True, "http_port": 8080, "max_rounds_per_account": 10**9,
+    "slugs": ["vota"],          # slugs a cubrir
+    "targets": {},              # "slug" o "slug/mesa" -> nombre del concursante
+    "votos": {},                # "slug" o "slug/mesa" -> votos por solicitud (<= maxVotes)
+    "spread": False,            # repartir entre todos en vez de cargar al target
+    "pausado": False,
+    "workers": 4,
+    "delay_min": 1.2, "delay_max": 3.5,
+    "unique_fp": True,
+    "poll_status_every": 15,
+    "save_every": 60,
+    "report_every": 300,        # segundos entre reportes automáticos a Slack
+    "descansos": True,
+    "http_port": 8080,
+    "max_rounds_per_account": 0,   # 0 = ilimitado
+    "slack_webhook": None,
 }
 
 def load_config() -> dict:
     cfg = dict(DEFAULTS)
     if CONFIG.exists():
-        try: cfg.update(json.loads(CONFIG.read_text("utf-8")))
-        except Exception as e: print("config.json invalido:", e)
+        try:
+            cfg.update(json.loads(CONFIG.read_text("utf-8")))
+        except Exception as e:
+            print("config.json invalido:", e)
     return cfg
 
 def save_config(cfg: dict):
@@ -77,6 +92,13 @@ def save_json(p, data):
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), "utf-8")
     tmp.replace(p)
 
+def resolver(cfg, slug, mesa):
+    """Devuelve (target, votos) para slug/mesa, con fallback a slug y a '*'."""
+    for k in (f"{slug}/{mesa}", slug, "*"):
+        if k in cfg.get("targets", {}):
+            return cfg["targets"][k], cfg.get("votos", {}).get(k)
+    return None, None
+
 # ----------------------------------------------------------------- SLACK
 def slack(titulo: str, texto: str = "", color: str = "#36a64f", campos=None):
     wh = os.environ.get("SLACK_WEBHOOK") or load_config().get("slack_webhook")
@@ -86,7 +108,7 @@ def slack(titulo: str, texto: str = "", color: str = "#36a64f", campos=None):
         blocks.append({"type": "section", "fields": [
             {"type": "mrkdwn", "text": f"*{k}*\n{v}"} for k, v in campos]})
     blocks.append({"type": "context", "elements": [
-        {"type": "mrkdwn", "text": f"🕒 {datetime.now():%Y-%m-%d %H:%M:%S} · `{os.uname().nodename if hasattr(os,'uname') else 'host'}`"}]})
+        {"type": "mrkdwn", "text": f"🕒 {datetime.now():%Y-%m-%d %H:%M:%S}"}]})
     try:
         requests.post(wh, json={"attachments": [{"color": color, "blocks": blocks}]}, timeout=10)
     except Exception as e:
@@ -106,13 +128,13 @@ def new_session(persona=None):
     })
     return s
 
-def log_voto(slug, email, rnd, resultado):
+def log_voto(mesa, email, rnd, resultado):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     nuevo = not LOG.exists()
     with LOG.open("a", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
-        if nuevo: w.writerow(["fecha", "evento", "cuenta", "ronda", "resultado"])
-        w.writerow([datetime.now().isoformat(timespec="seconds"), slug, email, rnd, resultado])
+        if nuevo: w.writerow(["fecha", "mesa", "cuenta", "ronda", "resultado"])
+        w.writerow([datetime.now().isoformat(timespec="seconds"), mesa, email, rnd, resultado])
 
 def latido():
     HEART.parent.mkdir(parents=True, exist_ok=True)
@@ -231,19 +253,39 @@ def fetch_cfg(s, slug):
     cfg = s.get(f"{API}/config/{slug}.json", timeout=20).json()
     return st, cfg
 
-def build_votes(contestants, max_votes, target=None, spread=False, custom=None):
+def mesas_de(cfg: dict):
+    """Todas las mesas de votación de un config: voting, voting2, voting3..."""
+    out = []
+    for k, v in (cfg or {}).items():
+        if RE_MESA.match(k) and isinstance(v, dict) and v.get("configId"):
+            if v.get("enabled", True) is False:
+                continue
+            out.append((k, v))
+    return sorted(out, key=lambda x: (len(x[0]), x[0]))
+
+def build_votes(contestants, max_votes, target=None, spread=False, custom=None, n=None):
+    """requireAllVotes=true en esta votación: la suma DEBE ser exactamente max_votes."""
     names = {c["id"]: c["name"] for c in contestants if not c.get("deleted")}
     votes = {i: 0 for i in names}
     if custom:
         for part in custom.split(","):
-            k, _, n = part.partition("=")
+            k, _, val = part.partition("=")
             hit = [i for i, nm in names.items() if k.strip().lower() in nm.lower()]
             if not hit: sys.exit(f"No encontre '{k.strip()}'. Opciones: {', '.join(names.values())}")
-            votes[hit[0]] = int(n)
+            votes[hit[0]] = int(val)
+        falta = max_votes - sum(votes.values())
+        if falta > 0:
+            for i in votes: votes[i] += falta // len(votes) + (1 if list(votes).index(i) < falta % len(votes) else 0)
     elif target:
         hit = [i for i, nm in names.items() if target.lower() in nm.lower()]
         if not hit: sys.exit(f"No encontre '{target}'. Opciones: {', '.join(names.values())}")
-        votes[hit[0]] = max_votes
+        cuantos = max(1, min(int(n or max_votes), max_votes))
+        votes[hit[0]] = cuantos
+        resto = max_votes - cuantos
+        otros = [i for i in names if i != hit[0]]
+        if resto and otros:
+            for idx, i in enumerate(otros):
+                votes[i] = resto // len(otros) + (1 if idx < resto % len(otros) else 0)
     elif spread:
         base, rem = divmod(max_votes, len(names))
         for idx, i in enumerate(names): votes[i] = base + (1 if idx < rem else 0)
@@ -266,15 +308,20 @@ def cmd_list(args):
         p = a.get("persona", {})
         print(f"  {a['email']:<34} ritmo={p.get('ritmo','-')} ua={p.get('ua','')[:38]}...")
 
-def cmd_probe(args):
+def cmd_mesas(args):
     s = new_session()
     for slug in SLUGS_CONOCIDOS:
         try: st, cfg = fetch_cfg(s, slug)
         except Exception as e: print(f"[{slug}] error {e}"); continue
-        v = cfg.get("voting") or {}
-        print(f"\n=== {slug} ===\n  titulo: {cfg.get('nombre') or v.get('title')}")
-        print(f"  activa: {st.get('active')}  abierta: {st.get('voting_open')}")
-        print("  nominados:", ", ".join(c["name"] for c in v.get("contestants", []) if not c.get("deleted")))
+        print(f"\n=== {slug} ===  activa={st.get('active')} abierta={st.get('voting_open')}")
+        for k, v in mesas_de(cfg):
+            ids = ", ".join(c["name"] for c in v.get("contestants", []) if not c.get("deleted"))
+            print(f"  · mesa {k:<8} maxVotes={v.get('maxVotes')} configId={v['configId'][:8]}")
+            print(f"      {v.get('title')}")
+            print(f"      {ids}")
+
+def cmd_probe(args):
+    cmd_mesas(args)
 
 def cmd_check(args):
     s = new_session()
@@ -282,36 +329,109 @@ def cmd_check(args):
         for slug in SLUGS_CONOCIDOS:
             try:
                 _, cfg = fetch_cfg(s, slug)
-                cid = (cfg.get("voting") or {}).get("configId")
-                if not cid: continue
-                r = s.get(f"{API}/api/user-state", params={"user_im": a["im"], "config_id": cid}, timeout=20).json()
-                print(f"  {a['email']:<32} [{slug}] phase={r.get('phase') or '-'} round={r.get('round')}")
-            except Exception as e: print(f"  {a['email']} error {e}")
+                for k, v in mesas_de(cfg):
+                    r = s.get(f"{API}/api/user-state",
+                              params={"user_im": a["im"], "config_id": v["configId"]}, timeout=20).json()
+                    print(f"  {a['email']:<32} [{slug}/{k}] phase={r.get('phase') or '-'} round={r.get('round')}")
+            except Exception as e:
+                print(f"  {a['email']} error {e}")
 
 def cmd_target(args):
-    cfg = load_config(); cfg["target"] = args.nombre; save_config(cfg)
-    print(f"target -> {args.nombre}   (el bot lo toma en <= {cfg['reload_every']}s)")
-    slack(f"🎯 Concursante cambiado", f"Ahora se vota por *{args.nombre}*")
+    cfg = load_config(); cfg["targets"][args.nombre] = None  # placeholder
+    cmd_vote(argparse.Namespace(nombre=args.nombre, votos=None, slug=args.slug,
+                                mesa=None, repartir=False, todos=True, total=None))
+    return
+
+def cmd_vote(args):
+    cfg = load_config()
+    slugs = cfg.get("slugs") or ["vota"]
+    if args.slug:       claves = [args.slug]
+    elif args.todos:    claves = list(slugs)
+    else:               claves = [slugs[0]]
+    if args.mesa:
+        claves = [f"{c}/{args.mesa}" for c in claves]
+    for k in claves:
+        cfg["targets"][k] = args.nombre
+        if args.votos is not None: cfg["votos"][k] = args.votos
+    if args.repartir: cfg["spread"] = True
+    if args.total: cfg["totales"] = {**(cfg.get("totales") or {}), **{k: args.total for k in claves}}
+    save_config(cfg)
+    detalle = f"{args.nombre}" + (f" · {args.votos} votos/solicitud" if args.votos else "")
+    print(f"target -> {detalle}  en: {', '.join(claves)}")
+    slack("🎯 Concursante cambiado", f"Ahora se vota por *{detalle}*\nMesas: `{', '.join(claves)}`")
+
+def cmd_duelos(args):
+    cfg = load_config()
+    cfg["slugs"] = ["vota", "lagranjavip"]
+    save_config(cfg)
+    print("slugs -> vota, lagranjavip (todas sus mesas). El bot lo toma en <30s.")
+    slack("🔁 Modo DUELOS", "Cubriendo *todas* las mesas de `vota` y `lagranjavip` de forma indefinida.")
 
 def cmd_evento(args):
-    cfg = load_config(); cfg["evento"] = args.nombre; save_config(cfg)
-    print(f"evento -> {args.nombre} (slug {EVENTOS.get(args.nombre, '?')})")
-    slack(f"🔁 Votación cambiada", f"Nuevo evento: *{args.nombre}*")
+    cfg = load_config()
+    slug = EVENTOS.get(args.nombre.lower(), args.nombre)
+    cfg["slugs"] = [slug]
+    save_config(cfg)
+    print(f"evento -> {args.nombre} (slug {slug})")
+    slack("🔁 Votación cambiada", f"Nuevo evento: *{args.nombre}*")
+
+def cmd_on(args):
+    cfg = load_config(); cfg["pausado"] = False; save_config(cfg)
+    print("votabot ACTIVADO"); slack("▶️ votabot ACTIVADO", "Reanudando votación.", color="#2eb886")
+
+def cmd_off(args):
+    cfg = load_config(); cfg["pausado"] = True; save_config(cfg)
+    print("votabot PAUSADO"); slack("⏸️ votabot PAUSADO", "Deja de votar. El proceso sigue vivo.", color="#e0a800")
 
 def cmd_status(args):
     cfg = load_config()
+    m = load_json(METRICS, {})
     est = load_json(STATE, {})
-    print(f"evento: {cfg['evento']}  target: {cfg['target']}  workers: {cfg['workers']}")
-    print(f"delay: {cfg['delay_min']}-{cfg['delay_max']}s  cuentas: {len(load_json(ACCOUNTS, []))}")
+    print(f"slugs: {cfg['slugs']}  pausado: {cfg['pausado']}  workers: {cfg['workers']}")
+    print(f"targets: {cfg['targets']}  votos: {cfg['votos']}")
+    print(f"cuentas: {len(load_json(ACCOUNTS, []))}  delay: {cfg['delay_min']}-{cfg['delay_max']}s")
     hb = HEART.stat().st_mtime if HEART.exists() else 0
     print(f"ultimo latido: {int(time.time()-hb)}s atras" if hb else "sin latido")
+    print(f"solicitudes totales: {m.get('solicitudes',0)}  votos totales: {m.get('votos',0)}")
     for cid, d in est.items():
-        if d: print(f"  {cid[:8]}: {len(d)} cuentas con rondas, max ronda={max(d.values())}")
+        if d: print(f"  mesa {cid[:8]}: {len(d)} cuentas, max ronda={max(d.values())}")
+
+def cmd_stats(args):
+    m = load_json(METRICS, {})
+    if not m: print("sin metricas todavia (el bot no ha corrido)"); return
+    print(f"uptime: {int(time.time()-m.get('inicio',time.time()))}s")
+    print(f"TOTAL solicitudes={m.get('solicitudes',0)} votos={m.get('votos',0)} "
+          f"ok={m.get('ok',0)} errores={m.get('err',0)} 409={m.get('conflictos',0)}")
+    for k, d in (m.get("mesas") or {}).items():
+        print(f"  {k:<20} solicitudes={d.get('solicitudes',0):>7} votos={d.get('votos',0):>8} "
+              f"errores={d.get('err',0)} target={d.get('target')}")
 
 def cmd_test_slack(args):
     slack("✅ Prueba de votabot", "Si ves esto, el webhook funciona.",
-          campos=[("Evento", load_config()["evento"]), ("Target", str(load_config()["target"]))])
+          campos=[("Slugs", ", ".join(load_config()["slugs"])), ("Targets", str(load_config()["targets"]))])
     print("enviado")
+
+def enviar_reporte(forzar=False):
+    m = load_json(METRICS, {})
+    if not m: return
+    lineas = []
+    for k, d in (m.get("mesas") or {}).items():
+        lineas.append(f"• `{k}` → *{d.get('target') or '?'}*: {d.get('solicitudes',0)} solicitudes / "
+                      f"{d.get('votos',0)} votos")
+    dur = max(1, time.time() - m.get("inicio", time.time()))
+    slack("📊 Reporte votabot",
+          "\n".join(lineas) or "sin mesas activas",
+          color="#439fe0",
+          campos=[("Solicitudes totales", f"{m.get('solicitudes',0)}"),
+                  ("Votos totales", f"*{m.get('votos',0)}*"),
+                  ("Errores", str(m.get("err",0))),
+                  ("409 (ya votó)", str(m.get("conflictos",0))),
+                  ("Ritmo", f"{m.get('solicitudes',0)/dur*60:.1f} sol/min"),
+                  ("Cuentas", str(len(load_json(ACCOUNTS, []))))])
+    print("[report] enviado")
+
+def cmd_report(args):
+    enviar_reporte(forzar=True)
 
 # ----------------------------------------------------------------- RUN (demonio)
 class Stats:
@@ -323,143 +443,175 @@ class Stats:
         with self.lock: return self.ok, self.err, self.skip, time.time() - self.t0
 
 def cmd_run(args):
+    cfg = load_config()
+    if args.workers:    cfg["workers"] = args.workers
+    if args.delay_min:  cfg["delay_min"] = args.delay_min
+    if args.delay_max:  cfg["delay_max"] = args.delay_max
+    if args.http_port:  cfg["http_port"] = args.http_port
+    if args.slugs:      cfg["slugs"] = [x.strip() for x in args.slugs.split(",") if x.strip()]
+    save_config(cfg)
+
     accs = asegurar_personas(load_json(ACCOUNTS, []))
     if not accs: sys.exit("No hay cuentas. Corre: python votabot.py login")
 
     stop, stats = threading.Event(), Stats()
     lock = threading.Lock()
     estado = load_json(STATE, {})
-    shared = {"abierto": False, "slug": None, "cid": None, "votes": {}, "titulo": ""}
+    shared = {}                      # "slug/mesa" -> {...}
+    pausa = {"on": bool(cfg.get("pausado"))}
     sesion_stats = {}
-    inicio_actual = [None]
+    metricas = {"inicio": time.time(), "solicitudes": 0, "votos": 0,
+                "ok": 0, "err": 0, "conflictos": 0, "mesas": {}}
 
-    # ---- monitor: vigila la config, el estado y recarga config.json
+    def m_de(mesa):
+        d = metricas["mesas"].setdefault(mesa, {"solicitudes": 0, "votos": 0, "err": 0, "conflictos": 0, "target": None})
+        return d
+
+    # ---- monitor: vigila configs, targets y pausa
     def monitor():
         s = new_session()
-        abierto_prev = None; titulo_prev = None
+        abierto_prev = {}
         while not stop.is_set():
-            try:
-                cfg = load_config()
-                slug = EVENTOS.get((cfg.get("evento") or "").lower(), cfg.get("slug")) or "vota"
-                st, c = fetch_cfg(s, slug)
-                v = c.get("voting") or {}
+            cfg = load_config()
+            with lock: pausa["on"] = bool(cfg.get("pausado"))
+            slugs = cfg.get("slugs") or ["vota"]
+            vistas = set()
+            for slug in slugs:
+                try:
+                    st, c = fetch_cfg(s, slug)
+                except Exception as e:
+                    print("[monitor]", slug, str(e)[:80]); continue
                 abierto = bool(st.get("active")) and st.get("voting_open") is not False
-                if v:
+                for mesa, v in mesas_de(c):
+                    clave = f"{slug}/{mesa}"
+                    vistas.add(clave)
+                    target, nv = resolver(cfg, slug, mesa)
                     votes = build_votes(v["contestants"], v.get("maxVotes", 10),
-                                        cfg.get("target"), cfg.get("spread"), cfg.get("votes"))
-                    titulo = c.get("nombre") or v.get("title") or slug
+                                        target, cfg.get("spread"), None, nv)
+                    titulo = v.get("title") or c.get("nombre") or clave
                     with lock:
-                        shared.update(abierto=abierto, slug=slug, cid=v["configId"],
-                                      votes=votes, titulo=titulo, target=cfg.get("target"))
-                else:
-                    with lock: shared.update(abierto=False, slug=slug, cid=None)
-
-                if abierto and abierto_prev is not True:
-                    inicio_actual[0] = time.time()
-                    sesion_stats.clear()
-                    n = max(1, min(int(cfg["workers"]), len(accs)))
-                    slack("🟢 VOTACIÓN INICIADA", f"*{shared.get('titulo','')}*",
-                          color="#2eb886",
-                          campos=[("Concursante", str(cfg.get("target"))),
-                                  ("Cuentas", str(len(accs))), ("Workers", str(n)),
-                                  ("Delay", f"{cfg['delay_min']}-{cfg['delay_max']}s"),
-                                  ("Estimado", f"~{int(n*60/((cfg['delay_min']+cfg['delay_max'])/2+0.3))} votos/min")])
-                elif not abierto and abierto_prev is True:
-                    dur = time.time() - (inicio_actual[0] or time.time())
-                    total = sum(v["votos"] for v in sesion_stats.values())
-                    lineas = "\n".join(f"• {v['email']} — {v['votos']} envíos" for v in
-                                       sorted(sesion_stats.values(), key=lambda x: -x["votos"])[:25])
-                    slack("🔴 VOTACIÓN FINALIZADA",
-                          f"Duración: *{dur/60:.1f} min*\nEnvíos totales: *{total}*\nVotos al concursante: *{total*10}*\n\n{lineas}",
-                          color="#e01e5a",
-                          campos=[("Concursante", str(cfg.get("target"))), ("Cuentas activas", str(len(sesion_stats)))])
-                    save_json(DATA_DIR / f"resumen_{datetime.now():%Y%m%d_%H%M}.json",
-                              {"inicio": inicio_actual[0], "duracion": dur, "total": total,
-                               "detalle": sesion_stats})
-                if titulo != titulo_prev and titulo_prev is not None:
-                    slack("ℹ️ Nuevo evento detectado", str(titulo))
-                abierto_prev, titulo_prev = abierto, titulo
-            except Exception as e:
-                with lock: shared["abierto"] = False
-                print("[monitor]", str(e)[:100])
+                        shared[clave] = {"abierto": abierto, "slug": slug, "mesa": mesa,
+                                         "cid": v["configId"], "votes": votes,
+                                         "titulo": titulo, "target": target}
+                        m_de(clave)["target"] = target
+                    if abierto and not abierto_prev.get(clave):
+                        n = max(1, min(int(cfg["workers"]), len(accs)))
+                        slack("🟢 VOTACIÓN INICIADA", f"*{titulo}*\n`{clave}`", color="#2eb886",
+                              campos=[("Concursante", str(target)), ("Cuentas", str(len(accs))),
+                                      ("Workers", str(n)), ("Delay", f"{cfg['delay_min']}-{cfg['delay_max']}s")])
+                    abierto_prev[clave] = abierto
+                # mesas que ya no existen
+                for clave in [k for k in list(shared) if k.startswith(slug + "/") and k not in vistas]:
+                    with lock: shared.pop(clave, None)
             stop.wait(load_config()["poll_status_every"])
 
-    # ---- worker: una cuenta = una persona
+    # ---- worker
     def trabajador(idx, cuentas):
         sesion = new_session()
-        time.sleep(random.uniform(0, 8))                     # arranque escalonado
+        time.sleep(random.uniform(0, 8))
         contador = {}
         while not stop.is_set():
+            if pausa["on"]:
+                stop.wait(3); continue
+            with lock:
+                objetivos = [(k, dict(d)) for k, d in shared.items()
+                             if d.get("abierto") and d.get("cid") and d.get("votes")]
+            if not objetivos:
+                stop.wait(3); continue
             for a in cuentas:
                 if stop.is_set(): return
-                if not shared["abierto"]: break
-                with lock:
-                    slug, cid, votes = shared["slug"], shared["cid"], dict(shared["votes"])
-                if not cid or not votes: break
-
-                per = a.get("persona", {})
-                if idx != id(a) % 1 and False: pass
-                sesion.headers["User-Agent"] = per.get("ua", UA_POOL[0])
-                sesion.headers["Accept-Language"] = per.get("lang", LANGS[0])
-
-                with lock: rnd = estado.setdefault(cid, {}).get(a["im"], 0)
-                phase = "main_done" if rnd == 0 else ("extra_done" if rnd % 2 else "main_done")
-                fp = f"{a['fp']}-{rnd}" if load_config()["unique_fp"] else a["fp"]
-                try:
-                    r = send_vote(sesion, slug, cid, votes, a["im"], phase, rnd, fp)
-                except Exception:
-                    stats.add("err"); time.sleep(2); continue
-
-                if r.status_code == 200:
-                    stats.add("ok"); log_voto(slug, a["email"], rnd, "ok")
+                for clave, d in objetivos:
+                    if pausa["on"] or stop.is_set(): break
+                    if not shared.get(clave, {}).get("abierto"): continue
+                    per = a.get("persona", {})
+                    sesion.headers["User-Agent"] = per.get("ua", UA_POOL[0])
+                    sesion.headers["Accept-Language"] = per.get("lang", LANGS[0])
+                    cid = d["cid"]
                     with lock:
-                        estado.setdefault(cid, {})[a["im"]] = rnd + 1
-                        e = sesion_stats.setdefault(a["im"], {"email": a["email"], "votos": 0})
-                        e["votos"] += 1
-                    contador[a["im"]] = contador.get(a["im"], 0) + 1
-                elif r.status_code == 409:
-                    stats.add("skip"); log_voto(slug, a["email"], rnd, "409")
-                    with lock: estado.setdefault(cid, {})[a["im"]] = rnd + 1
-                elif r.status_code == 429:
-                    esp = float(r.headers.get("Retry-After") or 5)
-                    stats.add("skip"); stop.wait(esp)
-                else:
-                    stats.add("err"); log_voto(slug, a["email"], rnd, f"err{r.status_code}")
-
-                # pausa humana
-                base = random.uniform(load_config()["delay_min"], load_config()["delay_max"])
-                time.sleep(base * per.get("ritmo", 1.0))
-                # descanso ocasional
-                if load_config()["descansos"] and contador.get(a["im"], 0) >= per.get("descanso_cada", 999):
-                    contador[a["im"]] = 0
-                    stop.wait(random.randint(per.get("descanso_min", 20), per.get("descanso_max", 120)))
-            if not shared["abierto"]: stop.wait(3)
+                        rnd = estado.setdefault(cid, {}).get(a["im"], 0)
+                        maxr = load_config()["max_rounds_per_account"]
+                    if maxr and rnd >= maxr: continue
+                    phase = "main_done" if rnd % 2 == 0 else "extra_done"
+                    fp = f"{a['fp']}-{rnd}" if load_config()["unique_fp"] else a["fp"]
+                    try:
+                        r = send_vote(sesion, d["slug"], cid, d["votes"], a["im"], phase, rnd, fp)
+                    except Exception:
+                        stats.add("err"); time.sleep(2); continue
+                    nvotos = sum(d["votes"].values())
+                    with lock:
+                        mm = m_de(clave)
+                        mm["solicitudes"] += 1; mm["votos"] += nvotos
+                        metricas["solicitudes"] += 1; metricas["votos"] += nvotos
+                    if r.status_code == 200:
+                        stats.add("ok")
+                        with lock:
+                            metricas["ok"] += 1
+                            estado.setdefault(cid, {})[a["im"]] = rnd + 1
+                            e = sesion_stats.setdefault(a["im"], {"email": a["email"], "votos": 0})
+                            e["votos"] += nvotos
+                        log_voto(clave, a["email"], rnd, "ok")
+                        contador[a["im"]] = contador.get(a["im"], 0) + 1
+                    elif r.status_code == 409:
+                        stats.add("skip")
+                        with lock:
+                            metricas["conflictos"] += 1; m_de(clave)["conflictos"] += 1
+                            estado.setdefault(cid, {})[a["im"]] = rnd + 1
+                        log_voto(clave, a["email"], rnd, "409")
+                    elif r.status_code == 429:
+                        stats.add("skip")
+                        with lock: m_de(clave)["err"] += 1
+                        stop.wait(float(r.headers.get("Retry-After") or 5))
+                    else:
+                        stats.add("err")
+                        with lock:
+                            metricas["err"] += 1; m_de(clave)["err"] += 1
+                        log_voto(clave, a["email"], rnd, f"err{r.status_code}")
+                    base = random.uniform(load_config()["delay_min"], load_config()["delay_max"])
+                    time.sleep(base * per.get("ritmo", 1.0))
+                    if load_config()["descansos"] and contador.get(a["im"], 0) >= per.get("descanso_cada", 999):
+                        contador[a["im"]] = 0
+                        stop.wait(random.randint(per.get("descanso_min", 20), per.get("descanso_max", 120)))
 
     def guardador():
         while not stop.is_set():
             stop.wait(load_config()["save_every"])
-            with lock: save_json(STATE, estado)
+            with lock:
+                save_json(STATE, estado)
+                save_json(METRICS, metricas)
+
+    def reportador():
+        while not stop.is_set():
+            stop.wait(load_config()["report_every"])
+            with lock: save_json(METRICS, metricas)
+            enviar_reporte()
 
     def apagar(*_):
         print("\ncerrando..."); stop.set()
 
     signal.signal(signal.SIGINT, apagar); signal.signal(signal.SIGTERM, apagar)
 
-    # ---- servidor HTTP de observabilidad
     def http_server():
         port = load_config()["http_port"]
         class H(BaseHTTPRequestHandler):
-            def do_GET(self):
-                ok, err, skip, dt = stats.resumen()
-                body = json.dumps({"abierto": shared["abierto"], "evento": shared.get("slug"),
-                                   "target": shared.get("target"), "votos": ok, "saltados": skip,
-                                   "errores": err, "votos_por_seg": round(ok / max(dt, 1), 3),
-                                   "cuentas": len(accs), "uptime": int(dt),
-                                   "rondas": {k: max(v.values()) if v else 0 for k, v in estado.items()}},
-                                  ensure_ascii=False, indent=2).encode()
-                self.send_response(200 if self.path != "/health" or HEART.exists() else 503)
+            def _json(self, code, obj):
+                self.send_response(code)
                 self.send_header("Content-Type", "application/json"); self.end_headers()
-                self.wfile.write(body)
+                self.wfile.write(json.dumps(obj, ensure_ascii=False, indent=2).encode())
+            def do_GET(self):
+                if self.path.startswith("/health"):
+                    age = time.time() - (HEART.stat().st_mtime if HEART.exists() else 0)
+                    return self._json(200 if age < 120 else 503,
+                                      {"ok": age < 120, "latido_hace": round(age, 1)})
+                ok, err, skip, dt = stats.resumen()
+                with lock:
+                    body = {"pausado": pausa["on"], "mesas": {k: v.get("titulo") for k, v in shared.items()},
+                            "solicitudes": metricas["solicitudes"], "votos": metricas["votos"],
+                            "ok": metricas["ok"], "saltados": skip, "errores": metricas["err"],
+                            "conflictos_409": metricas["conflictos"],
+                            "votos_por_seg": round(ok / max(dt, 1), 3),
+                            "cuentas": len(accs), "uptime": int(dt),
+                            "detalle": metricas["mesas"]}
+                self._json(200, body)
             def log_message(self, *a): pass
         try: ThreadingHTTPServer(("0.0.0.0", port), H).serve_forever()
         except Exception as e: print("[http]", e)
@@ -467,13 +619,14 @@ def cmd_run(args):
     n = max(1, min(int(load_config()["workers"]), len(accs)))
     hilos = [threading.Thread(target=monitor, daemon=True),
              threading.Thread(target=guardador, daemon=True),
+             threading.Thread(target=reportador, daemon=True),
              threading.Thread(target=http_server, daemon=True)]
     for i in range(n):
         hilos.append(threading.Thread(target=trabajador, args=(i, accs[i::n]), daemon=True))
     for h in hilos: h.start()
 
     slack("🚀 votabot arrancado",
-          f"evento=`{load_config()['evento']}` target=`{load_config()['target']}` cuentas={len(accs)} workers={n}",
+          f"slugs=`{','.join(load_config()['slugs'])}` targets=`{load_config()['targets']}` cuentas={len(accs)} workers={n}",
           color="#439fe0")
     print(f"votabot | cuentas={len(accs)} workers={n} | http://localhost:{load_config()['http_port']}/ | Ctrl+C para salir")
 
@@ -481,13 +634,16 @@ def cmd_run(args):
         while not stop.is_set():
             latido(); stop.wait(20)
             ok, err, skip, dt = stats.resumen()
-            print(f"[{datetime.now():%H:%M:%S}] {'ABIERTO' if shared['abierto'] else 'en espera'} | "
-                  f"votos={ok} saltados={skip} errores={err} | {ok/max(dt,1):.2f} v/s | {str(shared.get('titulo'))[:40]}")
+            print(f"[{datetime.now():%H:%M:%S}] {'PAUSADO' if pausa['on'] else 'activo'} | "
+                  f"mesas={len(shared)} solicitudes={metricas['solicitudes']} votos={metricas['votos']} "
+                  f"err={err} 409={metricas['conflictos']} | {ok/max(dt,1):.2f} v/s")
     except KeyboardInterrupt:
         apagar()
     for h in hilos: h.join(timeout=3)
-    with lock: save_json(STATE, estado)
-    slack("🛑 votabot detenido", "Proceso finalizado correctamente.")
+    with lock:
+        save_json(STATE, estado); save_json(METRICS, metricas)
+    slack("🛑 votabot detenido",
+          f"Solicitudes: {metricas['solicitudes']} · Votos: {metricas['votos']}")
     print("listo.")
 
 # ----------------------------------------------------------------- CLI
@@ -497,17 +653,35 @@ if __name__ == "__main__":
 
     p = sub.add_parser("login"); p.add_argument("--headless", action="store_true"); p.set_defaults(f=cmd_login)
     sub.add_parser("list").set_defaults(f=cmd_list)
+    sub.add_parser("mesas").set_defaults(f=cmd_mesas)
     sub.add_parser("probe").set_defaults(f=cmd_probe)
-    sub.add_parser("check", aliases=["verify"]).set_defaults(f=cmd_check)
+    sub.add_parser("check").set_defaults(f=cmd_check)
+    sub.add_parser("verify").set_defaults(f=cmd_check)
     sub.add_parser("status").set_defaults(f=cmd_status)
+    sub.add_parser("stats").set_defaults(f=cmd_stats)
+    sub.add_parser("report").set_defaults(f=cmd_report)
     sub.add_parser("test-slack").set_defaults(f=cmd_test_slack)
+    sub.add_parser("on").set_defaults(f=cmd_on)
+    sub.add_parser("off").set_defaults(f=cmd_off)
+    sub.add_parser("duelos").set_defaults(f=cmd_duelos)
 
-    p = sub.add_parser("target"); p.add_argument("nombre"); p.set_defaults(f=cmd_target)
     p = sub.add_parser("evento"); p.add_argument("nombre"); p.set_defaults(f=cmd_evento)
+
+    p = sub.add_parser("vote")
+    p.add_argument("nombre")
+    p.add_argument("votos", nargs="?", type=int)
+    p.add_argument("--slug"); p.add_argument("--mesa")
+    p.add_argument("--todos", action="store_true"); p.add_argument("--repartir", action="store_true")
+    p.add_argument("--total", type=int)
+    p.set_defaults(f=cmd_vote)
+
+    p = sub.add_parser("target"); p.add_argument("nombre"); p.add_argument("--slug")
+    p.set_defaults(f=cmd_target)
 
     p = sub.add_parser("run")
     p.add_argument("--workers", type=int); p.add_argument("--delay-min", type=float)
     p.add_argument("--delay-max", type=float); p.add_argument("--http-port", type=int)
+    p.add_argument("--slugs")
     p.set_defaults(f=cmd_run)
 
     a = ap.parse_args(); a.f(a)
