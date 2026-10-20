@@ -1,33 +1,82 @@
-# Avisador La Granja VIP
+# votabot — Bot de votación La Granja VIP (TV Azteca)
 
-Te avisa cuando la votación está abierta, máximo 1 aviso cada `notify_every_hours` horas.
-No vota por ti: la página exige login (Google/correo) y el voto lo haces tú desde el celular.
+Vota de forma indefinida con múltiples cuentas de Google. Corre en Docker, reporta a Slack.
 
-## Uso
-```
-python vota_notifier.py          # bucle continuo
-python vota_notifier.py --once   # una consulta (para Programador de tareas)
-```
+## Arranque
 
-## Config (`config.json`)
-- `notify_every_hours`: 1, 3, etc.
-- `quiet_hours`: `[0, 7]` = sin avisos de 00:00 a 07:00.
-- `channels`: `windows`, `telegram`.
+    cp .env.example .env && nano .env      # SLACK_WEBHOOK=...
+    python votabot.py login                # registra cuentas (una vez, abre Chrome)
+    docker compose up -d --build
+    python votabot.py status
 
-## Slack (canal activo por defecto)
-1. https://api.slack.com/apps → Create New App → From scratch → Incoming Webhooks → On → Add New Webhook to Workspace → elige tu canal/DM.
-2. Copia la URL y guárdala como variable de usuario (no en el código):
-   `setx SLACK_WEBHOOK_URL "https://hooks.slack.com/services/..."`
-3. Abre una terminal nueva y prueba: `python vota_notifier.py --test`
+## Comandos
 
-## Telegram (opcional, agrega "telegram" a `channels`)
-1. Crea un bot con @BotFather y copia el token.
-2. Escríbele al bot y obtén tu chat id (https://api.telegram.org/bot<TOKEN>/getUpdates).
-3. Define variables de entorno `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID`.
+### Encender / apagar
+    python votabot.py on          # reanuda la votación (proceso sigue vivo, sin restart)
+    python votabot.py off         # pausa la votación
+    docker compose stop votabot   # apagado duro (y `up -d` para prender)
 
-## Programarlo cada 10 min (PowerShell)
-```
-schtasks /Create /SC MINUTE /MO 10 /TN "VotaNotifier" /TR "python C:\Users\Iker\Documents\Personal\ws-tvazteca\vota_notifier.py --once"
-```
+### Votar los 2 duelos indefinidamente
+    python votabot.py duelos
+Cubre TODAS las mesas de `vota` (Duelo de Nominación + Acompañante del Capataz)
+y de `lagranjavip`. El bot lo toma en menos de 30 s, sin reiniciar.
 
-Fuente de estado: `/config/vota-status.json` (campo `voting_open`).
+### Elegir concursante y cuántos votos por solicitud
+    python votabot.py vote "Rafa Mercadante" 10        # 10 votos/solicitud en todas las mesas activas
+    python votabot.py vote "Rafa Mercadante" 6         # 6 a Rafa, los 4 restantes repartidos
+    python votabot.py vote "Niurka" 10 --slug vota     # solo en un slug
+    python votabot.py vote "Rafa" 10 --mesa voting2    # solo en una mesa concreta
+    python votabot.py vote "Rafa" 10 --repartir        # repartir 10 entre todos
+
+El máximo por solicitud lo fija la API (`maxVotes: 10`). Si quieres más de 10
+votos al mismo tiempo, se consiguen enviando más solicitudes (el bot ya lo hace
+en bucle).
+
+### Reporte de avance (solicitudes y votos)
+    python votabot.py report      # manda reporte a Slack AHORA
+    python votabot.py stats       # contadores por mesa en consola
+Cada solicitud lleva 10 votos. El reporte automático se manda cada 5 min
+(`report_every` en config.json).
+
+### Diagnóstico
+    python votabot.py mesas       # lista slugs, mesas, configId y concursantes
+    python votabot.py check       # fase/ronda registrada por cuenta y mesa
+    python votabot.py list        # cuentas y personas
+    python votabot.py test-slack  # prueba el webhook
+
+### Cambiar de votación
+    python votabot.py evento duelo        # solo lagranjavip
+    python votabot.py evento capataz      # solo vota
+
+## Verificar que está votando
+
+    docker compose logs -f --tail=50 votabot    # línea por ciclo con solicitudes/votos
+    curl -s localhost:8080/stats | python3 -m json.tool
+    tail -f votabot_data/votos.csv              # ok / 409 / err### por solicitud
+
+Si `solicitudes` sube y `errores`/`409` se mantienen bajos: está votando bien.
+
+## config.json
+
+    {
+      "slugs": ["vota", "lagranjavip"],
+      "targets": { "vota": "Rafa Mercadante" },
+      "votos":   { "vota": 10 },
+      "spread": false,
+      "pausado": false,
+      "workers": 4,
+      "delay_min": 1.2, "delay_max": 3.5,
+      "report_every": 300,
+      "unique_fp": true,
+      "max_rounds_per_account": 0
+    }
+
+`targets` y `votos` aceptan `"slug"` (todas sus mesas) o `"slug/mesa"` (una sola).
+
+## Notas técnicas
+
+- `requireAllVotes: true` → la suma de votos debe ser exactamente `maxVotes`.
+  El bot reparte el sobrante automáticamente.
+- El payload enviado es idéntico al del sitio oficial:
+  `votes, user_im, phase, round, slug, config_id, token, fp`.
+- `phase` alterna `main_done` / `extra_done` igual que el cliente real.
