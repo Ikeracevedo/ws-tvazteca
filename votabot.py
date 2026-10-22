@@ -264,21 +264,32 @@ def mesas_de(cfg: dict):
     return sorted(out, key=lambda x: (len(x[0]), x[0]))
 
 def build_votes(contestants, max_votes, target=None, spread=False, custom=None, n=None):
-    """requireAllVotes=true en esta votación: la suma DEBE ser exactamente max_votes."""
+    """Devuelve (votes, aviso). requireAllVotes=true: la suma DEBE ser max_votes.
+    NUNCA llama sys.exit: si el target no existe, cae al primero y devuelve aviso."""
     names = {c["id"]: c["name"] for c in contestants if not c.get("deleted")}
     votes = {i: 0 for i in names}
+    aviso = None
+    if not names:
+        return votes, "sin concursantes"
+
     if custom:
         for part in custom.split(","):
             k, _, val = part.partition("=")
             hit = [i for i, nm in names.items() if k.strip().lower() in nm.lower()]
-            if not hit: sys.exit(f"No encontre '{k.strip()}'. Opciones: {', '.join(names.values())}")
+            if not hit:
+                aviso = f"'{k.strip()}' no está en la lista (ignorado)"
+                continue
             votes[hit[0]] = int(val)
         falta = max_votes - sum(votes.values())
         if falta > 0:
-            for i in votes: votes[i] += falta // len(votes) + (1 if list(votes).index(i) < falta % len(votes) else 0)
+            ids = list(votes)
+            for idx, i in enumerate(ids):
+                votes[i] += falta // len(ids) + (1 if idx < falta % len(ids) else 0)
     elif target:
         hit = [i for i, nm in names.items() if target.lower() in nm.lower()]
-        if not hit: sys.exit(f"No encontre '{target}'. Opciones: {', '.join(names.values())}")
+        if not hit:
+            hit = [list(names)[0]]
+            aviso = f"'{target}' NO está en esta votación → votando por '{names[hit[0]]}'"
         cuantos = max(1, min(int(n or max_votes), max_votes))
         votes[hit[0]] = cuantos
         resto = max_votes - cuantos
@@ -291,8 +302,7 @@ def build_votes(contestants, max_votes, target=None, spread=False, custom=None, 
         for idx, i in enumerate(names): votes[i] = base + (1 if idx < rem else 0)
     else:
         votes[list(names)[0]] = max_votes
-    return votes
-
+    return votes, aviso
 def send_vote(s, slug, cid, votes, im, phase, rnd, fp):
     try:
         token = s.get(f"{API}/api/vote-token", params={"fp": fp}, timeout=20).json().get("token", "")
@@ -350,16 +360,31 @@ def cmd_vote(args):
     else:               claves = [slugs[0]]
     if args.mesa:
         claves = [f"{c}/{args.mesa}" for c in claves]
+
+    s = new_session()                      # ← validación contra la lista real
+    for c in claves:
+        slug, _, mesa = c.partition("/")
+        try:
+            _, conf = fetch_cfg(s, slug)
+            lista = []
+            for mk, mv in mesas_de(conf):
+                if mesa and mk != mesa: continue
+                lista += [x["name"] for x in mv["contestants"] if not x.get("deleted")]
+            hit = sorted({x for x in lista if args.nombre.lower() in x.lower()})
+            if hit: print(f"  ✔ {c}: coincide con {', '.join(hit)}")
+            else:   print(f"  ⚠ {c}: '{args.nombre}' NO está. Opciones: {', '.join(sorted(set(lista)))}")
+        except Exception as e:
+            print(f"  (no pude validar {c}: {e})")
+
     for k in claves:
         cfg["targets"][k] = args.nombre
         if args.votos is not None: cfg["votos"][k] = args.votos
     if args.repartir: cfg["spread"] = True
-    if args.total: cfg["totales"] = {**(cfg.get("totales") or {}), **{k: args.total for k in claves}}
     save_config(cfg)
     detalle = f"{args.nombre}" + (f" · {args.votos} votos/solicitud" if args.votos else "")
     print(f"target -> {detalle}  en: {', '.join(claves)}")
     slack("🎯 Concursante cambiado", f"Ahora se vota por *{detalle}*\nMesas: `{', '.join(claves)}`")
-
+    
 def cmd_duelos(args):
     cfg = load_config()
     cfg["slugs"] = ["vota", "lagranjavip"]
@@ -483,6 +508,20 @@ def cmd_run(args):
                     print("[monitor]", slug, str(e)[:80]); continue
                 abierto = bool(st.get("active")) and st.get("voting_open") is not False
                 for mesa, v in mesas_de(c):
+                    clave = f"{slug}/{mesa}"
+                    vistas.add(clave)
+                    target, nv = resolver(cfg, slug, mesa)
+                    votes, aviso = build_votes(v["contestants"], v.get("maxVotes", 10),
+                                               target, cfg.get("spread"), None, nv)
+                    titulo = v.get("title") or c.get("nombre") or clave
+                    with lock:
+                        shared[clave] = {"abierto": abierto, "slug": slug, "mesa": mesa,
+                                         "cid": v["configId"], "votes": votes,
+                                         "titulo": titulo, "target": target}
+                        m_de(clave)["target"] = target
+                    if aviso and aviso_prev.get(clave) != aviso:
+                        slack("⚠️ Target no encontrado", f"`{clave}`: {aviso}", color="#e0a800")
+                    aviso_prev[clave] = aviso
                     clave = f"{slug}/{mesa}"
                     vistas.add(clave)
                     target, nv = resolver(cfg, slug, mesa)

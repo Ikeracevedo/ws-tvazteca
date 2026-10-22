@@ -5,5 +5,19 @@
     "im": "2f8e5781-33b8-4f22-95ff-7bd4493daa85",
     "fp": "4ccb42abdf7c85ef978cd9b86caefa9c",
     "profile": "votabot_data\\profiles\\cuenta1"
+  },
+  {
+    "email": "vivkivargas1968@gmail.com",
+    "name": "Bigdalia Vargas Salas",
+    "im": "e381c238-0947-4a1b-9c5b-2fc05678bbf3",
+    "fp": "b2eecc0aacce31ae8bad761a32542a04",
+    "persona": {
+      "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      "lang": "es-MX,es;q=0.9",
+      "ritmo": 0.83,
+      "descanso_cada": 32,
+      "descanso_min": 42,
+      "descanso_max": 224
+    }
   }
 ]
