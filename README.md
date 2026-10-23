@@ -2,6 +2,9 @@
 
 Vota de forma indefinida con múltiples cuentas de Google. Corre en Docker, reporta a Slack.
 
+Consulta [GUIA_VOTABOT.md](GUIA_VOTABOT.md) para conceptos, configuracion y todos los comandos.
+Consulta [GUIA_LOGIN_WEB.md](GUIA_LOGIN_WEB.md) para registrar cuentas desde HTTPS en la EC2.
+
 ## Arranque
 
     cp .env.example .env && nano .env      # SLACK_WEBHOOK=...
@@ -10,6 +13,18 @@ Vota de forma indefinida con múltiples cuentas de Google. Corre en Docker, repo
     python votabot.py status
 
 ## Comandos
+
+### Encuestas
+    python votabot.py encuestas                     # lista encuestas configuradas y conocidas
+    python votabot.py encuesta vota                 # estado, mesas y concursantes de una encuesta
+    python votabot.py encuesta https://vota.tvazteca.com/config/vota.json --activar
+
+`encuesta --activar` selecciona el slug y deja votabot pausado. Después elige el
+concursante con `vote` y ejecuta `on`. Puedes pasar cualquier slug publicado por
+`vota.tvazteca.com` o su URL de configuración.
+
+    python votabot.py help                          # ayuda con todos los comandos
+    python votabot.py help vote                     # ayuda detallada de vote
 
 ### Encender / apagar
     python votabot.py on          # reanuda la votación (proceso sigue vivo, sin restart)
@@ -56,7 +71,10 @@ Cada solicitud lleva 10 votos. El reporte automático se manda cada 5 min
 
 Si `solicitudes` sube y `errores`/`409` se mantienen bajos: está votando bien.
 
-## config.json
+## Configuracion persistente
+
+La configuracion runtime vive en `votabot_data/config.json`. El archivo raiz
+`config.json` solo sirve como plantilla inicial durante el despliegue.
 
     {
       "slugs": ["vota", "lagranjavip"],

@@ -17,7 +17,7 @@ import argparse, csv, hashlib, json, os, random, re, signal, sys, threading, tim
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 import requests
 
 # ----------------------------------------------------------------- CONSTANTES
@@ -106,6 +106,24 @@ def resolver(cfg, slug, mesa):
         if k in cfg.get("targets", {}):
             return cfg["targets"][k], cfg.get("votos", {}).get(k)
     return None, None
+
+def normalizar_slug(valor):
+    """Acepta un slug o una URL de vota.tvazteca.com y devuelve el slug."""
+    texto = valor.strip()
+    if not texto:
+        raise ValueError("indica el slug o la URL de la encuesta")
+    ruta = urlparse(texto).path if "://" in texto else texto
+    if "/config/" in ruta:
+        ruta = ruta.rsplit("/config/", 1)[1]
+    slug = ruta.strip("/").split("/")[-1]
+    slug = re.sub(r"(?:-status)?\.json$", "", slug)
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", slug):
+        raise ValueError(f"slug invalido: {valor}")
+    return slug
+
+def slugs_disponibles(cfg=None):
+    configurados = (cfg or load_config()).get("slugs") or []
+    return list(dict.fromkeys([*configurados, *SLUGS_CONOCIDOS]))
 
 # ----------------------------------------------------------------- SLACK
 def slack(titulo: str, texto: str = "", color: str = "#36a64f", campos=None):
@@ -326,25 +344,68 @@ def cmd_list(args):
         p = a.get("persona", {})
         print(f"  {a['email']:<34} ritmo={p.get('ritmo','-')} ua={p.get('ua','')[:38]}...")
 
+def mostrar_encuesta(s, slug, incluir_concursantes=True):
+    st, cfg = fetch_cfg(s, slug)
+    print(f"\n=== {slug} === activa={st.get('active')} abierta={st.get('voting_open')}")
+    mesas = mesas_de(cfg)
+    if not mesas:
+        print("  Sin mesas de votacion activas.")
+        return
+    for mesa, datos in mesas:
+        print(f"  · mesa {mesa:<8} maxVotes={datos.get('maxVotes')} configId={datos['configId'][:8]}")
+        print(f"      {datos.get('title') or cfg.get('nombre') or '-'}")
+        if incluir_concursantes:
+            concursantes = ", ".join(
+                concursante["name"] for concursante in datos.get("contestants", [])
+                if not concursante.get("deleted")
+            )
+            print(f"      {concursantes or 'Sin concursantes'}")
+
+def cmd_encuestas(args):
+    s = new_session()
+    print("Encuestas configuradas y conocidas:")
+    for slug in slugs_disponibles():
+        try:
+            st, cfg = fetch_cfg(s, slug)
+            mesas = mesas_de(cfg)
+            estado = "ABIERTA" if st.get("active") and st.get("voting_open") is not False else "cerrada"
+            print(f"  · {slug:<20} {estado:<7} mesas={len(mesas)}")
+        except Exception as e:
+            print(f"  · {slug:<20} no disponible ({str(e)[:70]})")
+
+def cmd_encuesta(args):
+    try:
+        slug = normalizar_slug(args.encuesta)
+    except ValueError as e:
+        print(f"Error: {e}")
+        return
+    try:
+        mostrar_encuesta(new_session(), slug)
+    except Exception as e:
+        print(f"No pude consultar '{slug}': {e}")
+        return
+    if args.activar:
+        cfg = load_config()
+        cfg["slugs"] = [slug]
+        cfg["pausado"] = True
+        save_config(cfg)
+        print(f"Encuesta activa -> {slug}. Votabot queda PAUSADO: elige target y ejecuta 'on'.")
+
 def cmd_mesas(args):
     s = new_session()
-    for slug in SLUGS_CONOCIDOS:
-        try: st, cfg = fetch_cfg(s, slug)
-        except Exception as e: print(f"[{slug}] error {e}"); continue
-        print(f"\n=== {slug} ===  activa={st.get('active')} abierta={st.get('voting_open')}")
-        for k, v in mesas_de(cfg):
-            ids = ", ".join(c["name"] for c in v.get("contestants", []) if not c.get("deleted"))
-            print(f"  · mesa {k:<8} maxVotes={v.get('maxVotes')} configId={v['configId'][:8]}")
-            print(f"      {v.get('title')}")
-            print(f"      {ids}")
+    slugs = [normalizar_slug(slug) for slug in args.slugs] if args.slugs else slugs_disponibles()
+    for slug in slugs:
+        try: mostrar_encuesta(s, slug)
+        except Exception as e: print(f"[{slug}] error {e}")
 
 def cmd_probe(args):
     cmd_mesas(args)
 
 def cmd_check(args):
     s = new_session()
+    slugs = [normalizar_slug(slug) for slug in args.slugs] if args.slugs else slugs_disponibles()
     for a in load_json(ACCOUNTS, []):
-        for slug in SLUGS_CONOCIDOS:
+        for slug in slugs:
             try:
                 _, cfg = fetch_cfg(s, slug)
                 for k, v in mesas_de(cfg):
@@ -400,7 +461,7 @@ def cmd_duelos(args):
 
 def cmd_evento(args):
     cfg = load_config()
-    slug = EVENTOS.get(args.nombre.lower(), args.nombre)
+    slug = EVENTOS.get(args.nombre.lower(), normalizar_slug(args.nombre))
     cfg["slugs"] = [slug]
     save_config(cfg)
     print(f"evento -> {args.nombre} (slug {slug})")
@@ -502,6 +563,7 @@ def cmd_run(args):
     def monitor():
         s = new_session()
         abierto_prev = {}
+        aviso_prev = {}
         while not stop.is_set():
             cfg = load_config()
             with lock: pausa["on"] = bool(cfg.get("pausado"))
@@ -511,8 +573,13 @@ def cmd_run(args):
                 try:
                     st, c = fetch_cfg(s, slug)
                 except Exception as e:
-                    print("[monitor]", slug, str(e)[:80]); continue
-                abierto = bool(st.get("active")) and st.get("voting_open") is not False
+                    print("[monitor]", slug, str(e)[:80])
+                    with lock:
+                        for clave, datos in shared.items():
+                            if clave.startswith(slug + "/"):
+                                datos["abierto"] = False
+                    continue
+                abierto = bool(st.get("active")) and st.get("voting_open") is True
                 for mesa, v in mesas_de(c):
                     clave = f"{slug}/{mesa}"
                     vistas.add(clave)
@@ -688,40 +755,55 @@ def cmd_run(args):
 
 # ----------------------------------------------------------------- CLI
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    ap = argparse.ArgumentParser(
+        description="Votabot: consulta y vota encuestas de vota.tvazteca.com.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Ejemplos:
+  python votabot.py encuestas
+  python votabot.py encuesta vota
+  python votabot.py encuesta https://vota.tvazteca.com/config/vota.json --activar
+  python votabot.py vote \"Rafa Mercadante\" 10 --slug vota
+  python votabot.py help vote""",
+    )
+    sub = ap.add_subparsers(dest="cmd", required=True, title="Comandos")
 
-    p = sub.add_parser("login"); p.add_argument("--headless", action="store_true"); p.set_defaults(f=cmd_login)
-    sub.add_parser("list").set_defaults(f=cmd_list)
-    sub.add_parser("mesas").set_defaults(f=cmd_mesas)
-    sub.add_parser("probe").set_defaults(f=cmd_probe)
-    sub.add_parser("check").set_defaults(f=cmd_check)
-    sub.add_parser("verify").set_defaults(f=cmd_check)
-    sub.add_parser("status").set_defaults(f=cmd_status)
-    sub.add_parser("stats").set_defaults(f=cmd_stats)
-    sub.add_parser("report").set_defaults(f=cmd_report)
-    sub.add_parser("test-slack").set_defaults(f=cmd_test_slack)
-    sub.add_parser("on").set_defaults(f=cmd_on)
-    sub.add_parser("off").set_defaults(f=cmd_off)
-    sub.add_parser("duelos").set_defaults(f=cmd_duelos)
+    p = sub.add_parser("login", help="Registra cuentas de Google"); p.add_argument("--headless", action="store_true", help="Usa navegador sin interfaz"); p.set_defaults(f=cmd_login)
+    sub.add_parser("list", help="Lista cuentas registradas").set_defaults(f=cmd_list)
+    sub.add_parser("encuestas", help="Lista encuestas configuradas y conocidas").set_defaults(f=cmd_encuestas)
+    p = sub.add_parser("encuesta", help="Consulta una encuesta por slug o URL"); p.add_argument("encuesta", help="Slug o URL de /config/<slug>.json"); p.add_argument("--activar", action="store_true", help="La configura y deja el bot pausado"); p.set_defaults(f=cmd_encuesta)
+    p = sub.add_parser("mesas", help="Lista mesas y concursantes"); p.add_argument("slugs", nargs="*", help="Slugs opcionales"); p.set_defaults(f=cmd_mesas)
+    p = sub.add_parser("probe", help="Alias de mesas"); p.add_argument("slugs", nargs="*", help="Slugs opcionales"); p.set_defaults(f=cmd_mesas)
+    p = sub.add_parser("check", help="Consulta ronda de cada cuenta"); p.add_argument("slugs", nargs="*", help="Slugs opcionales"); p.set_defaults(f=cmd_check)
+    p = sub.add_parser("verify", help="Alias de check"); p.add_argument("slugs", nargs="*", help="Slugs opcionales"); p.set_defaults(f=cmd_check)
+    sub.add_parser("status", help="Muestra configuracion y actividad").set_defaults(f=cmd_status)
+    sub.add_parser("stats", help="Muestra metricas acumuladas").set_defaults(f=cmd_stats)
+    sub.add_parser("report", help="Envia reporte inmediato a Slack").set_defaults(f=cmd_report)
+    sub.add_parser("test-slack", help="Prueba el webhook de Slack").set_defaults(f=cmd_test_slack)
+    sub.add_parser("on", help="Reanuda la votacion").set_defaults(f=cmd_on)
+    sub.add_parser("off", help="Pausa la votacion").set_defaults(f=cmd_off)
+    sub.add_parser("duelos", help="Activa vota y lagranjavip").set_defaults(f=cmd_duelos)
 
-    p = sub.add_parser("evento"); p.add_argument("nombre"); p.set_defaults(f=cmd_evento)
+    p = sub.add_parser("evento", help="Selecciona una encuesta por alias o slug"); p.add_argument("nombre"); p.set_defaults(f=cmd_evento)
 
-    p = sub.add_parser("vote")
-    p.add_argument("nombre")
-    p.add_argument("votos", nargs="?", type=int)
-    p.add_argument("--slug"); p.add_argument("--mesa")
-    p.add_argument("--todos", action="store_true"); p.add_argument("--repartir", action="store_true")
-    p.add_argument("--total", type=int)
+    p = sub.add_parser("vote", help="Define concursante y votos por solicitud")
+    p.add_argument("nombre", help="Nombre completo o parcial del concursante")
+    p.add_argument("votos", nargs="?", type=int, help="Votos al concursante por solicitud")
+    p.add_argument("--slug", help="Solo esta encuesta"); p.add_argument("--mesa", help="Solo esta mesa")
+    p.add_argument("--todos", action="store_true", help="Aplica a todas las encuestas configuradas"); p.add_argument("--repartir", action="store_true", help="Reparte votos entre concursantes")
+    p.add_argument("--total", type=int, help="Reservado para compatibilidad")
     p.set_defaults(f=cmd_vote)
 
-    p = sub.add_parser("target"); p.add_argument("nombre"); p.add_argument("--slug")
+    p = sub.add_parser("target", help="Alias de vote sin cantidad"); p.add_argument("nombre"); p.add_argument("--slug")
     p.set_defaults(f=cmd_target)
 
-    p = sub.add_parser("run")
-    p.add_argument("--workers", type=int); p.add_argument("--delay-min", type=float)
-    p.add_argument("--delay-max", type=float); p.add_argument("--http-port", type=int)
-    p.add_argument("--slugs")
+    p = sub.add_parser("run", help="Inicia el demonio de votacion")
+    p.add_argument("--workers", type=int, help="Numero de workers"); p.add_argument("--delay-min", type=float, help="Espera minima entre solicitudes")
+    p.add_argument("--delay-max", type=float, help="Espera maxima entre solicitudes"); p.add_argument("--http-port", type=int, help="Puerto HTTP de estado")
+    p.add_argument("--slugs", help="Slugs separados por comas")
     p.set_defaults(f=cmd_run)
+
+    p = sub.add_parser("help", help="Muestra ayuda general o de un comando")
+    p.add_argument("comando", nargs="?", help="Comando del que se quiere ayuda")
+    p.set_defaults(f=lambda args: ap.parse_args([args.comando, "--help"]) if args.comando else ap.print_help())
 
     a = ap.parse_args(); a.f(a)

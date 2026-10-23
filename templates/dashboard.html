@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>votabot · Cuentas</title>
+  <style>
+    body { background: #101827; color: #e5e7eb; font-family: system-ui, sans-serif; margin: 0; } main { margin: 48px auto; max-width: 760px; padding: 0 24px; } a { color: #86efac; } .button { background: #22c55e; border-radius: 6px; color: #052e16; display: inline-block; font-weight: 700; padding: 12px 16px; text-decoration: none; } table { border-collapse: collapse; margin-top: 24px; width: 100%; } th, td { border-bottom: 1px solid #374151; padding: 12px 8px; text-align: left; } .success { color: #86efac; } .error { color: #fca5a5; } nav { display: flex; justify-content: space-between; }
+  </style>
+</head>
+<body>
+  <main>
+    <nav><strong>votabot · Cuentas</strong><a href="{{ url_for('logout') }}">Salir</a></nav>
+    {% for category, message in get_flashed_messages(with_categories=true) %}
+      <p class="{{ category }}">{{ message }}</p>
+    {% endfor %}
+    <p><a class="button" href="{{ url_for('start_google_login') }}">Registrar cuenta con Google</a></p>
+    <p>Google recibe las credenciales. Este servidor solo guarda la cuenta validada al completar OAuth.</p>
+    <table>
+      <thead><tr><th>Nombre</th><th>Correo</th></tr></thead>
+      <tbody>
+        {% for account in accounts %}
+          <tr><td>{{ account.name or '-' }}</td><td>{{ account.email }}</td></tr>
+        {% else %}
+          <tr><td colspan="2">No hay cuentas registradas.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </main>
+</body>
+</html>

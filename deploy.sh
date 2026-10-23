@@ -10,7 +10,11 @@ git pull --ff-only
 
 mkdir -p votabot_data
 [ -f votabot_data/config.json ] || cp config.json votabot_data/config.json
-[ -f .env ] || printf 'SLACK_WEBHOOK=\n' > .env
+if [ ! -f .env ]; then
+  cp .env.example .env
+  echo "Configura .env siguiendo GUIA_LOGIN_WEB.md y ejecuta deploy.sh de nuevo."
+  exit 1
+fi
 
 sudo docker compose up -d --build
 sudo docker compose logs -f

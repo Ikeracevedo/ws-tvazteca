@@ -16,3 +16,30 @@ services:
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
+
+  login:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    command: ["python", "login_web.py"]
+    volumes:
+      - ./votabot_data:/app/votabot_data
+    expose: ["8081"]
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    depends_on: [login]
+    environment:
+      VOTABOT_DOMAIN: ${VOTABOT_DOMAIN:?Configura VOTABOT_DOMAIN en .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
