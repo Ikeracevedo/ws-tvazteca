@@ -170,6 +170,7 @@ def dashboard_data():
     except Exception:
         metrics = load_json(METRICS, {})
         bot = {
+            "pausado": False,
             "solicitudes": metrics.get("solicitudes", 0),
             "votos": metrics.get("votos", 0),
             "ok": metrics.get("ok", 0),
@@ -181,6 +182,7 @@ def dashboard_data():
         "accounts": {"total": len(accounts), "active": active_accounts},
         "survey": {"slugs": cfg.get("slugs", []), "targets": cfg.get("targets", {})},
         "metrics": {
+            "paused": bot.get("pausado", False),
             "requests": bot.get("solicitudes", 0),
             "votes": bot.get("votos", 0),
             "accepted": bot.get("ok", 0),
