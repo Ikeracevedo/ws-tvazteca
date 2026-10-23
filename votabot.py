@@ -49,7 +49,8 @@ STATE    = DATA_DIR / "state.json"
 LOG      = DATA_DIR / "votos.csv"
 HEART    = DATA_DIR / "heartbeat.txt"
 METRICS  = DATA_DIR / "metricas.json"
-CONFIG   = Path("config.json")
+CONFIG   = DATA_DIR / "config.json"
+LEGACY_CONFIG = Path("config.json")
 
 # ----------------------------------------------------------------- CONFIG
 DEFAULTS = {
@@ -77,9 +78,16 @@ def load_config() -> dict:
             cfg.update(json.loads(CONFIG.read_text("utf-8")))
         except Exception as e:
             print("config.json invalido:", e)
+    elif LEGACY_CONFIG.exists():
+        try:
+            cfg.update(json.loads(LEGACY_CONFIG.read_text("utf-8")))
+            save_config(cfg)
+        except Exception as e:
+            print("config.json invalido:", e)
     return cfg
 
 def save_config(cfg: dict):
+    CONFIG.parent.mkdir(parents=True, exist_ok=True)
     CONFIG.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), "utf-8")
 
 def load_json(p, d):
@@ -347,10 +355,8 @@ def cmd_check(args):
                 print(f"  {a['email']} error {e}")
 
 def cmd_target(args):
-    cfg = load_config(); cfg["targets"][args.nombre] = None  # placeholder
     cmd_vote(argparse.Namespace(nombre=args.nombre, votos=None, slug=args.slug,
                                 mesa=None, repartir=False, todos=True, total=None))
-    return
 
 def cmd_vote(args):
     cfg = load_config()
@@ -522,17 +528,6 @@ def cmd_run(args):
                     if aviso and aviso_prev.get(clave) != aviso:
                         slack("⚠️ Target no encontrado", f"`{clave}`: {aviso}", color="#e0a800")
                     aviso_prev[clave] = aviso
-                    clave = f"{slug}/{mesa}"
-                    vistas.add(clave)
-                    target, nv = resolver(cfg, slug, mesa)
-                    votes = build_votes(v["contestants"], v.get("maxVotes", 10),
-                                        target, cfg.get("spread"), None, nv)
-                    titulo = v.get("title") or c.get("nombre") or clave
-                    with lock:
-                        shared[clave] = {"abierto": abierto, "slug": slug, "mesa": mesa,
-                                         "cid": v["configId"], "votes": votes,
-                                         "titulo": titulo, "target": target}
-                        m_de(clave)["target"] = target
                     if abierto and not abierto_prev.get(clave):
                         n = max(1, min(int(cfg["workers"]), len(accs)))
                         slack("🟢 VOTACIÓN INICIADA", f"*{titulo}*\n`{clave}`", color="#2eb886",
@@ -542,6 +537,12 @@ def cmd_run(args):
                 # mesas que ya no existen
                 for clave in [k for k in list(shared) if k.startswith(slug + "/") and k not in vistas]:
                     with lock: shared.pop(clave, None)
+            with lock:
+                config_ids_activos = {mesa["cid"] for mesa in shared.values() if mesa.get("cid")}
+                for config_id in list(estado):
+                    if config_id not in config_ids_activos:
+                        estado.pop(config_id, None)
+                save_json(STATE, estado)
             stop.wait(load_config()["poll_status_every"])
 
     # ---- worker

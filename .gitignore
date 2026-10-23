@@ -1,6 +1,6 @@
 __pycache__/
-votabot_data/profiles/
-votabot_data/*.csv
+votabot_data/*
+!votabot_data/accounts.json
 *.pyc
 
 .env

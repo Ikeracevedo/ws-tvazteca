@@ -6,7 +6,6 @@ services:
     ports: ["127.0.0.1:8080:8080"]
     volumes:
       - ./votabot_data:/app/votabot_data
-      - ./config.json:/app/config.json
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request as u; u.urlopen('http://127.0.0.1:8080/health', timeout=5)\""]
       interval: 30s

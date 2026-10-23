@@ -13,7 +13,14 @@ else
   ESTADO=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}sin-healthcheck{{end}}' "$CID" 2>/dev/null || echo desconocido)
 fi
 
-avisar() { curl -s -X POST "$SLACK_WEBHOOK" -H 'Content-Type: application/json' -d "$1"; }
+avisar() {
+  if [ -z "$SLACK_WEBHOOK" ]; then
+    echo "SLACK_WEBHOOK no configurado; alerta no enviada" >&2
+    return 0
+  fi
+  curl -fsS -X POST "$SLACK_WEBHOOK" -H 'Content-Type: application/json' -d "$1" \
+    || echo "No se pudo enviar la alerta a Slack" >&2
+}
 
 if [ "$ESTADO" = "healthy" ]; then
   echo 0 > "$FALLOS"; exit 0
@@ -24,6 +31,6 @@ echo "estado=$ESTADO fallos=$N"
 
 if [ "$N" -ge 3 ]; then
   avisar "{\"text\":\"⚠️ *votabot* no está sano (\`$ESTADO\`) tras 3 chequeos. Reiniciando.\"}"
-  docker compose restart votabot
+  docker compose up -d votabot
   echo 0 > "$FALLOS"
 fi
