@@ -5,6 +5,7 @@ import base64
 import csv
 import hashlib
 import hmac
+import json
 import os
 import secrets
 import threading
@@ -16,7 +17,7 @@ import requests
 from flask import Flask, abort, flash, redirect, render_template, request, session, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from votabot import ACCOUNTS, LOG, METRICS, asegurar_personas, exchange_for_im, load_config, load_json, save_config, save_json, slack
+from votabot import ACCOUNTS, ACTIVITY, LOG, METRICS, asegurar_personas, exchange_for_im, load_config, load_json, save_config, save_json, slack
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -126,6 +127,21 @@ def bot_snapshot():
 
 def recent_vote_logs(accounts, limit=100):
     aliases = {account.get("email"): f"Cuenta {position:02d}" for position, account in enumerate(accounts, start=1)}
+    if ACTIVITY.exists():
+        try:
+            with ACTIVITY.open("r", encoding="utf-8") as file:
+                rows = [json.loads(line) for line in file if line.strip()][-limit:]
+            return [
+                {
+                    "fecha": row.get("fecha", ""), "mesa": row.get("mesa", ""),
+                    "destino": row.get("target", ""), "votos": row.get("votos", 0),
+                    "cuenta": aliases.get(row.get("cuenta"), "Cuenta protegida"),
+                    "ronda": row.get("ronda", ""), "resultado": row.get("resultado", ""),
+                }
+                for row in reversed(rows)
+            ]
+        except Exception:
+            return []
     if not LOG.exists():
         return []
     try:
@@ -136,7 +152,9 @@ def recent_vote_logs(accounts, limit=100):
     return [
         {
             "fecha": row.get("fecha", ""),
-            "mesa": row.get("mesa", ""),
+            "mesa": row.get("mesa", row.get("evento", "")),
+            "destino": "",
+            "votos": 0,
             "cuenta": aliases.get(row.get("cuenta"), "Cuenta protegida"),
             "ronda": row.get("ronda", ""),
             "resultado": row.get("resultado", ""),
@@ -167,6 +185,10 @@ def ceo_snapshot():
     bot = bot_snapshot()
     public_config = dict(cfg)
     public_config.pop("slack_webhook", None)
+    logs = recent_vote_logs(accounts)
+    targets = {mesa: detail.get("target", "") for mesa, detail in bot.get("detalle", {}).items()}
+    for event in logs:
+        event["destino"] = event["destino"] or targets.get(event["mesa"], "No disponible en histórico")
     return {
         "accounts": [
             {"alias": f"Cuenta {position:02d}", "name": account.get("name", ""), "email": account.get("email", ""), "active": account.get("activo", True)}
@@ -175,7 +197,7 @@ def ceo_snapshot():
         "config": public_config,
         "bot": bot,
         "calculator": calculator(cfg, accounts, bot),
-        "logs": recent_vote_logs(accounts),
+        "logs": logs,
     }
 
 
@@ -274,7 +296,8 @@ def ceo_control():
         cfg["pausado"] = action == "pause"
         save_config(cfg)
         status = "pausada" if cfg["pausado"] else "reanudada"
-        slack("🎛️ CEO actualizó votabot", f"La votación se {status} desde el panel CEO.", color="#ffd100")
+        title = "⏸️ CEO detuvo bot" if cfg["pausado"] else "▶️ CEO activó bot"
+        slack(title, f"La votación se {status} desde el panel CEO.", color="#ffd100")
         flash(f"Votación {status}.", "success")
         return redirect(url_for("ceo_dashboard"))
 

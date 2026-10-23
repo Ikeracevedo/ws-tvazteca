@@ -47,6 +47,7 @@ DATA_DIR = Path("votabot_data")
 ACCOUNTS = DATA_DIR / "accounts.json"
 STATE    = DATA_DIR / "state.json"
 LOG      = DATA_DIR / "votos.csv"
+ACTIVITY = DATA_DIR / "actividad.jsonl"
 HEART    = DATA_DIR / "heartbeat.txt"
 METRICS  = DATA_DIR / "metricas.json"
 CONFIG   = DATA_DIR / "config.json"
@@ -156,13 +157,27 @@ def new_session(persona=None):
     })
     return s
 
+LOG_LOCK = threading.Lock()
+
+
 def log_voto(mesa, email, rnd, resultado):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    nuevo = not LOG.exists()
-    with LOG.open("a", encoding="utf-8", newline="") as f:
-        w = csv.writer(f)
-        if nuevo: w.writerow(["fecha", "mesa", "cuenta", "ronda", "resultado"])
-        w.writerow([datetime.now().isoformat(timespec="seconds"), mesa, email, rnd, resultado])
+    with LOG_LOCK:
+        nuevo = not LOG.exists()
+        with LOG.open("a", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            if nuevo: w.writerow(["fecha", "mesa", "cuenta", "ronda", "resultado"])
+            w.writerow([datetime.now().isoformat(timespec="seconds"), mesa, email, rnd, resultado])
+
+
+def log_actividad(mesa, target, email, rnd, resultado, votos):
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    evento = {"fecha": datetime.now().isoformat(timespec="seconds"), "mesa": mesa,
+              "target": target, "cuenta": email, "ronda": rnd,
+              "resultado": resultado, "votos": votos}
+    with LOG_LOCK:
+        with ACTIVITY.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(evento, ensure_ascii=False) + "\n")
 
 def latido():
     HEART.parent.mkdir(parents=True, exist_ok=True)
@@ -672,6 +687,7 @@ def cmd_run(args):
                         with lock:
                             metricas["err"] += 1; m_de(clave)["err"] += 1
                         log_voto(clave, a["email"], rnd, "request_error")
+                        log_actividad(clave, d.get("target"), a["email"], rnd, "request_error", 0)
                         stop.wait(2); continue
                     nvotos = sum(d["votes"].values())
                     with lock:
@@ -686,6 +702,7 @@ def cmd_run(args):
                             e = sesion_stats.setdefault(a["im"], {"email": a["email"], "votos": 0})
                             e["votos"] += nvotos
                         log_voto(clave, a["email"], rnd, "ok")
+                        log_actividad(clave, d.get("target"), a["email"], rnd, "ok", nvotos)
                         contador[a["im"]] = contador.get(a["im"], 0) + 1
                     elif r.status_code == 409:
                         stats.add("skip")
@@ -693,15 +710,19 @@ def cmd_run(args):
                             metricas["conflictos"] += 1; m_de(clave)["conflictos"] += 1
                             estado.setdefault(cid, {})[a["im"]] = rnd + 1
                         log_voto(clave, a["email"], rnd, "409")
+                        log_actividad(clave, d.get("target"), a["email"], rnd, "409", 0)
                     elif r.status_code == 429:
                         stats.add("skip")
                         with lock: m_de(clave)["err"] += 1
+                        log_voto(clave, a["email"], rnd, "429")
+                        log_actividad(clave, d.get("target"), a["email"], rnd, "429", 0)
                         stop.wait(float(r.headers.get("Retry-After") or 5))
                     else:
                         stats.add("err")
                         with lock:
                             metricas["err"] += 1; m_de(clave)["err"] += 1
                         log_voto(clave, a["email"], rnd, f"err{r.status_code}")
+                        log_actividad(clave, d.get("target"), a["email"], rnd, f"err{r.status_code}", 0)
                     base = random.uniform(load_config()["delay_min"], load_config()["delay_max"])
                     time.sleep(base * per.get("ritmo", 1.0))
                     if load_config()["descansos"] and contador.get(a["im"], 0) >= per.get("descanso_cada", 999):
