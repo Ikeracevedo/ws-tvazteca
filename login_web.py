@@ -283,6 +283,13 @@ def ceo_dashboard():
     return render_template("ceo.html")
 
 
+@app.get("/ceo/user-view")
+@require_ceo
+def ceo_user_view():
+    session["admin"] = True
+    return redirect(url_for("dashboard"))
+
+
 @app.get("/api/ceo")
 @require_ceo
 def ceo_data():

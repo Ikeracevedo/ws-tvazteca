@@ -10,7 +10,7 @@
   </style>
 </head>
 <body>
-  <header><div class="brand"><span class="mark"><i></i><i></i><i></i><i></i></span><span>tv azteca · CEO</span></div><a href="{{ url_for('logout') }}">Salir</a></header>
+  <header><div class="brand"><span class="mark"><i></i><i></i><i></i><i></i></span><span>tv azteca · CEO</span></div><div><a href="{{ url_for('ceo_user_view') }}">Vista de usuario</a><span class="muted"> · </span><a href="{{ url_for('logout') }}">Salir</a></div></header>
   <main>
     <p class="eyebrow">Consola ejecutiva</p><h1>Control y auditoría de votabot</h1><span class="status" id="status">Actualizando</span>
     {% for category, message in get_flashed_messages(with_categories=true) %}<p class="flash {{ category }}">{{ message }}</p>{% endfor %}
