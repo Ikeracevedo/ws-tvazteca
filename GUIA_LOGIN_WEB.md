@@ -48,6 +48,7 @@ VOTABOT_DOMAIN=tvazteca.duckdns.org
 GOOGLE_OAUTH_CLIENT_ID=pega_aqui_el_client_id
 GOOGLE_OAUTH_CLIENT_SECRET=pega_aqui_el_client_secret
 VOTABOT_ADMIN_PASSWORD=elige_una_contrasena_larga_y_unica
+VOTABOT_CEO_PASSWORD=elige_otra_contrasena_larga_y_unica
 VOTABOT_SESSION_SECRET=genera_un_secreto_aleatorio_de_64_caracteres
 ```
 
@@ -99,6 +100,16 @@ sudo docker compose restart login
 ```
 
 No publiques el puerto `8081`: solo Caddy debe exponer el panel mediante HTTPS.
+
+## Consola CEO
+
+Entra a `https://tvazteca.duckdns.org/ceo/login` con
+`VOTABOT_CEO_PASSWORD`. Esta consola muestra los correos registrados, el
+historial de solicitudes, métricas, la calculadora de ritmo y el control de
+pausa, reanudación, participante, votos por solicitud, workers y frecuencia.
+
+El acceso normal en `/login` conserva las cuentas anónimas. La consola CEO usa
+una sesión separada y cada cambio operativo deja un aviso en Slack.
 
 ## Activar una cuenta para votar
 

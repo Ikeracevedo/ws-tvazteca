@@ -136,7 +136,9 @@ def slack(titulo: str, texto: str = "", color: str = "#36a64f", campos=None):
     blocks.append({"type": "context", "elements": [
         {"type": "mrkdwn", "text": f"🕒 {datetime.now():%Y-%m-%d %H:%M:%S}"}]})
     try:
-        requests.post(wh, json={"attachments": [{"color": color, "blocks": blocks}]}, timeout=10)
+        response = requests.post(wh, json={"attachments": [{"color": color, "blocks": blocks}]}, timeout=10)
+        if not response.ok:
+            print("[slack] respuesta:", response.status_code)
     except Exception as e:
         print("[slack] error:", str(e)[:80])
 
@@ -666,7 +668,11 @@ def cmd_run(args):
                     try:
                         r = send_vote(sesion, d["slug"], cid, d["votes"], a["im"], phase, rnd, fp)
                     except Exception:
-                        stats.add("err"); time.sleep(2); continue
+                        stats.add("err")
+                        with lock:
+                            metricas["err"] += 1; m_de(clave)["err"] += 1
+                        log_voto(clave, a["email"], rnd, "request_error")
+                        stop.wait(2); continue
                     nvotos = sum(d["votes"].values())
                     with lock:
                         mm = m_de(clave)

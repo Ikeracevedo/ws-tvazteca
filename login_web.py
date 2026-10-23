@@ -2,6 +2,7 @@
 """Panel HTTPS para registrar cuentas de votabot mediante Google OAuth."""
 
 import base64
+import csv
 import hashlib
 import hmac
 import os
@@ -15,7 +16,7 @@ import requests
 from flask import Flask, abort, flash, redirect, render_template, request, session, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from votabot import ACCOUNTS, METRICS, asegurar_personas, exchange_for_im, load_config, load_json, save_json, slack
+from votabot import ACCOUNTS, LOG, METRICS, asegurar_personas, exchange_for_im, load_config, load_json, save_config, save_json, slack
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -77,6 +78,16 @@ def require_admin(view):
     return wrapped
 
 
+def require_ceo(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get("ceo"):
+            return redirect(url_for("ceo_login"))
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
 def account_token(account):
     account_id = account.get("im", "").encode()
     secret_key = app.config["SECRET_KEY"].encode()
@@ -92,6 +103,78 @@ def dashboard_accounts(accounts):
         }
         for position, account in enumerate(accounts, start=1)
     ]
+
+
+def bot_snapshot():
+    try:
+        response = requests.get("http://votabot:8080/", timeout=3)
+        response.raise_for_status()
+        return response.json()
+    except Exception:
+        metrics = load_json(METRICS, {})
+        return {
+            "pausado": load_config().get("pausado", True),
+            "mesas": {},
+            "solicitudes": metrics.get("solicitudes", 0),
+            "votos": metrics.get("votos", 0),
+            "ok": metrics.get("ok", 0),
+            "errores": metrics.get("err", 0),
+            "conflictos_409": metrics.get("conflictos", 0),
+            "detalle": metrics.get("mesas", {}),
+        }
+
+
+def recent_vote_logs(accounts, limit=100):
+    aliases = {account.get("email"): f"Cuenta {position:02d}" for position, account in enumerate(accounts, start=1)}
+    if not LOG.exists():
+        return []
+    try:
+        with LOG.open("r", encoding="utf-8", newline="") as file:
+            rows = list(csv.DictReader(file))[-limit:]
+    except Exception:
+        return []
+    return [
+        {
+            "fecha": row.get("fecha", ""),
+            "mesa": row.get("mesa", ""),
+            "cuenta": aliases.get(row.get("cuenta"), "Cuenta protegida"),
+            "ronda": row.get("ronda", ""),
+            "resultado": row.get("resultado", ""),
+        }
+        for row in reversed(rows)
+    ]
+
+
+def calculator(cfg, accounts, bot):
+    active_accounts = sum(1 for account in accounts if account.get("activo", True))
+    average_delay = max(0.1, (float(cfg["delay_min"]) + float(cfg["delay_max"])) / 2)
+    votes_per_request = max([int(value) for value in cfg.get("votos", {}).values()] or [10])
+    tables = max(1, len(bot.get("mesas", {})))
+    requests_per_minute = active_accounts * 60 / average_delay
+    return {
+        "delay_average": round(average_delay, 2),
+        "votes_per_request": votes_per_request,
+        "requests_per_minute": round(requests_per_minute, 1),
+        "votes_per_minute": round(requests_per_minute * votes_per_request / tables, 1),
+        "votes_per_hour": round(requests_per_minute * votes_per_request * 60 / tables),
+        "active_accounts": active_accounts,
+    }
+
+
+def ceo_snapshot():
+    accounts = asegurar_personas(load_json(ACCOUNTS, []))
+    cfg = load_config()
+    bot = bot_snapshot()
+    return {
+        "accounts": [
+            {"alias": f"Cuenta {position:02d}", "name": account.get("name", ""), "email": account.get("email", ""), "active": account.get("activo", True)}
+            for position, account in enumerate(accounts, start=1)
+        ],
+        "config": cfg,
+        "bot": bot,
+        "calculator": calculator(cfg, accounts, bot),
+        "logs": recent_vote_logs(accounts),
+    }
 
 
 def code_challenge(verifier):
@@ -144,10 +227,89 @@ def login():
     return render_template("login.html")
 
 
+@app.route("/ceo/login", methods=["GET", "POST"])
+def ceo_login():
+    if session.get("ceo"):
+        return redirect(url_for("ceo_dashboard"))
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        ceo_password = os.environ.get("VOTABOT_CEO_PASSWORD", "")
+        if not ceo_password:
+            abort(503, "Falta configurar VOTABOT_CEO_PASSWORD.")
+        if not secrets.compare_digest(password, ceo_password):
+            flash("Contraseña CEO incorrecta.", "error")
+            return render_template("login.html", ceo=True), 401
+        session.clear()
+        session["ceo"] = True
+        return redirect(url_for("ceo_dashboard"))
+    return render_template("login.html", ceo=True)
+
+
 @app.get("/logout")
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
+
+@app.get("/ceo")
+@require_ceo
+def ceo_dashboard():
+    return render_template("ceo.html")
+
+
+@app.get("/api/ceo")
+@require_ceo
+def ceo_data():
+    return ceo_snapshot()
+
+
+@app.post("/ceo/control")
+@require_ceo
+def ceo_control():
+    action = request.form.get("action", "")
+    cfg = load_config()
+    if action in {"pause", "resume"}:
+        cfg["pausado"] = action == "pause"
+        save_config(cfg)
+        status = "pausada" if cfg["pausado"] else "reanudada"
+        slack("🎛️ CEO actualizó votabot", f"La votación se {status} desde el panel CEO.", color="#ffd100")
+        flash(f"Votación {status}.", "success")
+        return redirect(url_for("ceo_dashboard"))
+
+    if action != "configure":
+        abort(400, "Acción no válida.")
+    slug = request.form.get("slug", "").strip()
+    target = request.form.get("target", "").strip()
+    if not slug or not target:
+        abort(400, "Selecciona encuesta y participante.")
+    bot = bot_snapshot()
+    participants = [
+        name for mesa, info in bot.get("mesas", {}).items()
+        if mesa.startswith(f"{slug}/")
+        for name in info.get("participantes", [])
+    ]
+    if target not in participants:
+        abort(400, "El participante no pertenece a la encuesta activa.")
+    try:
+        votes = max(1, min(10, int(request.form.get("votes", "10"))))
+        workers = max(1, min(20, int(request.form.get("workers", cfg["workers"]))))
+        delay_min = max(0.5, float(request.form.get("delay_min", cfg["delay_min"])))
+        delay_max = max(delay_min, float(request.form.get("delay_max", cfg["delay_max"])))
+    except ValueError:
+        abort(400, "Configuración numérica inválida.")
+    cfg.update({
+        "slugs": [slug],
+        "targets": {slug: target},
+        "votos": {slug: votes},
+        "workers": workers,
+        "delay_min": delay_min,
+        "delay_max": delay_max,
+    })
+    save_config(cfg)
+    slack("🎯 CEO actualizó campaña", f"Encuesta: *{slug}*\nParticipante: *{target}*", color="#193e70",
+          campos=[("Votos por solicitud", str(votes)), ("Workers", str(workers)), ("Frecuencia", f"{delay_min}-{delay_max}s")])
+    flash("Campaña actualizada. Votabot aplica el cambio en el siguiente ciclo.", "success")
+    return redirect(url_for("ceo_dashboard"))
 
 
 @app.get("/")
@@ -182,21 +344,7 @@ def dashboard_data():
     accounts = load_json(ACCOUNTS, [])
     active_accounts = sum(1 for account in accounts if account.get("activo", True))
     cfg = load_config()
-    try:
-        response = requests.get("http://votabot:8080/", timeout=3)
-        response.raise_for_status()
-        bot = response.json()
-    except Exception:
-        metrics = load_json(METRICS, {})
-        bot = {
-            "pausado": False,
-            "solicitudes": metrics.get("solicitudes", 0),
-            "votos": metrics.get("votos", 0),
-            "ok": metrics.get("ok", 0),
-            "errores": metrics.get("err", 0),
-            "conflictos_409": metrics.get("conflictos", 0),
-            "detalle": metrics.get("mesas", {}),
-        }
+    bot = bot_snapshot()
     return {
         "accounts": {"total": len(accounts), "active": active_accounts},
         "survey": {"slugs": cfg.get("slugs", []), "mesas": bot.get("mesas", {})},
