@@ -214,6 +214,8 @@ def upsert_account(access_token):
     with accounts_lock:
         accounts = asegurar_personas(load_json(ACCOUNTS, []))
         existing = next((account for account in accounts if account.get("email") == email), None)
+        if not existing and len(accounts) >= int(load_config().get("max_accounts", 20)):
+            raise RuntimeError("Se alcanzó el límite de cuentas configurado por CEO")
         accounts = [account for account in accounts if account.get("email") != email]
         accounts.append({
             "email": email,
@@ -292,6 +294,16 @@ def ceo_data():
 def ceo_control():
     action = request.form.get("action", "")
     cfg = load_config()
+    if action == "account_limit":
+        try:
+            max_accounts = max(1, min(200, int(request.form.get("max_accounts", "20"))))
+        except ValueError:
+            abort(400, "Límite de cuentas inválido.")
+        cfg["max_accounts"] = max_accounts
+        save_config(cfg)
+        slack("👥 CEO actualizó límite de cuentas", f"Límite de registro: *{max_accounts} cuentas*.", color="#193e70")
+        flash(f"Límite de registro actualizado a {max_accounts} cuentas.", "success")
+        return redirect(url_for("ceo_dashboard"))
     if action in {"pause", "resume"}:
         cfg["pausado"] = action == "pause"
         save_config(cfg)
@@ -341,7 +353,9 @@ def ceo_control():
 @require_admin
 def dashboard():
     accounts = asegurar_personas(load_json(ACCOUNTS, []))
-    return render_template("dashboard.html", accounts=dashboard_accounts(accounts))
+    max_accounts = int(load_config().get("max_accounts", 20))
+    return render_template("dashboard.html", accounts=dashboard_accounts(accounts),
+                           max_accounts=max_accounts, can_register=len(accounts) < max_accounts)
 
 
 @app.post("/accounts/activate")
@@ -371,7 +385,8 @@ def dashboard_data():
     cfg = load_config()
     bot = bot_snapshot()
     return {
-        "accounts": {"total": len(accounts), "active": active_accounts},
+        "accounts": {"total": len(accounts), "active": active_accounts,
+                     "max_accounts": int(cfg.get("max_accounts", 20))},
         "survey": {"slugs": cfg.get("slugs", []), "mesas": bot.get("mesas", {})},
         "metrics": {
             "paused": bot.get("pausado", False),
@@ -388,6 +403,10 @@ def dashboard_data():
 @app.get("/accounts/google")
 @require_admin
 def start_google_login():
+    accounts = asegurar_personas(load_json(ACCOUNTS, []))
+    if len(accounts) >= int(load_config().get("max_accounts", 20)):
+        flash("Se alcanzó el límite de cuentas. El perfil CEO debe aumentarlo para registrar otra.", "error")
+        return redirect(url_for("dashboard"))
     state = secrets.token_urlsafe(32)
     verifier = secrets.token_urlsafe(64)
     session["oauth_state"] = state

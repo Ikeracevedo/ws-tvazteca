@@ -40,7 +40,7 @@
       </section>
       <section class="card">
         <h2>Cuentas</h2>
-        <p><a class="primary" href="{{ url_for('start_google_login') }}">Registrar cuenta con Google</a></p>
+        <p>{% if can_register %}<a class="primary" href="{{ url_for('start_google_login') }}">Registrar cuenta con Google</a>{% else %}<span class="muted">Límite de {{ max_accounts }} cuentas alcanzado.</span>{% endif %}</p>
         <div class="account-list">
           {% for account in accounts %}
             <article class="account">
@@ -66,7 +66,7 @@
         if (!response.ok) throw new Error('dashboard no disponible');
         const data = await response.json();
         set('active-accounts', data.accounts.active);
-        set('total-accounts', `${data.accounts.total} registradas`);
+        set('total-accounts', `${data.accounts.total} de ${data.accounts.max_accounts} registradas`);
         set('votes', data.metrics.votes.toLocaleString('es-MX'));
         set('requests', `${data.metrics.requests.toLocaleString('es-MX')} solicitudes`);
         set('accepted', data.metrics.accepted.toLocaleString('es-MX'));

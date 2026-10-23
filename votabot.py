@@ -69,6 +69,7 @@ DEFAULTS = {
     "descansos": True,
     "http_port": 8080,
     "max_rounds_per_account": 0,   # 0 = ilimitado
+    "max_accounts": 20,
     "slack_webhook": None,
 }
 
