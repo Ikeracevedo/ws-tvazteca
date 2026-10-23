@@ -165,12 +165,14 @@ def ceo_snapshot():
     accounts = asegurar_personas(load_json(ACCOUNTS, []))
     cfg = load_config()
     bot = bot_snapshot()
+    public_config = dict(cfg)
+    public_config.pop("slack_webhook", None)
     return {
         "accounts": [
             {"alias": f"Cuenta {position:02d}", "name": account.get("name", ""), "email": account.get("email", ""), "active": account.get("activo", True)}
             for position, account in enumerate(accounts, start=1)
         ],
-        "config": cfg,
+        "config": public_config,
         "bot": bot,
         "calculator": calculator(cfg, accounts, bot),
         "logs": recent_vote_logs(accounts),
