@@ -3,6 +3,7 @@
 
 import base64
 import hashlib
+import hmac
 import os
 import secrets
 import threading
@@ -76,6 +77,23 @@ def require_admin(view):
     return wrapped
 
 
+def account_token(account):
+    account_id = account.get("im", "").encode()
+    secret_key = app.config["SECRET_KEY"].encode()
+    return hmac.new(secret_key, account_id, hashlib.sha256).hexdigest()
+
+
+def dashboard_accounts(accounts):
+    return [
+        {
+            "alias": f"Cuenta {position:02d}",
+            "activo": account.get("activo", True),
+            "token": account_token(account),
+        }
+        for position, account in enumerate(accounts, start=1)
+    ]
+
+
 def code_challenge(verifier):
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
@@ -99,7 +117,7 @@ def upsert_account(access_token):
         })
         accounts = asegurar_personas(accounts)
         save_json(ACCOUNTS, accounts)
-    return email
+    return None
 
 
 @app.get("/health")
@@ -136,24 +154,25 @@ def logout():
 @require_admin
 def dashboard():
     accounts = asegurar_personas(load_json(ACCOUNTS, []))
-    return render_template("dashboard.html", accounts=accounts)
+    return render_template("dashboard.html", accounts=dashboard_accounts(accounts))
 
 
 @app.post("/accounts/activate")
 @require_admin
 def activate_account():
-    email = request.form.get("email", "")
-    if not email:
+    token = request.form.get("account_token", "")
+    if not token:
         abort(400, "Falta la cuenta.")
     with accounts_lock:
         accounts = asegurar_personas(load_json(ACCOUNTS, []))
-        account = next((item for item in accounts if item.get("email") == email), None)
+        account = next((item for item in accounts if hmac.compare_digest(account_token(item), token)), None)
         if not account:
             abort(404, "Cuenta no encontrada.")
         account["activo"] = True
         save_json(ACCOUNTS, accounts)
-    slack("✅ Nueva cuenta activada", f"Ya estamos trabajando con la nueva cuenta: *{email}*.", color="#00a859")
-    flash(f"{email} quedó activa. Votabot la incorpora en el siguiente ciclo.", "success")
+        alias = f"Cuenta {accounts.index(account) + 1:02d}"
+    slack("✅ Nueva cuenta activada", f"Ya estamos trabajando con la nueva cuenta: *{alias}*.", color="#00a859")
+    flash(f"{alias} quedó activa. Votabot la incorpora en el siguiente ciclo.", "success")
     return redirect(url_for("dashboard"))
 
 
@@ -180,7 +199,7 @@ def dashboard_data():
         }
     return {
         "accounts": {"total": len(accounts), "active": active_accounts},
-        "survey": {"slugs": cfg.get("slugs", []), "targets": cfg.get("targets", {})},
+        "survey": {"slugs": cfg.get("slugs", []), "mesas": bot.get("mesas", {})},
         "metrics": {
             "paused": bot.get("pausado", False),
             "requests": bot.get("solicitudes", 0),
@@ -245,12 +264,12 @@ def google_callback():
     if not access_token:
         abort(502, "Google no devolvio access_token.")
     try:
-        email = upsert_account(access_token)
+        upsert_account(access_token)
     except Exception as error:
         app.logger.exception("No se pudo registrar cuenta")
         flash(f"No se pudo registrar la cuenta: {error}", "error")
         return redirect(url_for("dashboard"))
-    flash(f"Cuenta registrada: {email}", "success")
+    flash("Cuenta registrada correctamente. Actívala cuando quieras empezar a votar.", "success")
     return redirect(url_for("dashboard"))
 
 

@@ -34,7 +34,7 @@
         <div class="live" id="bot-status">Actualización automática cada 5 segundos</div>
         <h2 style="margin-top: 16px">Encuesta actual</h2>
         <div class="summary-line">Encuestas <strong id="surveys">—</strong></div>
-        <div class="summary-line">Concursante <strong id="targets">—</strong></div>
+        <div class="summary-line">Mesas activas <strong id="tables">—</strong></div>
         <div class="details" id="details"><p class="muted">Esperando métricas del bot…</p></div>
       </section>
       <section class="card">
@@ -43,9 +43,9 @@
         <div class="account-list">
           {% for account in accounts %}
             <article class="account">
-              <div><div class="account-name">{{ account.name or 'Sin nombre' }}</div><div class="account-email">{{ account.email }}</div><span class="status {{ 'active' if account.activo else 'pending' }}">{{ 'Votando' if account.activo else 'Pendiente' }}</span></div>
+              <div><div class="account-name">{{ account.alias }}</div><div class="account-email">Cuenta protegida</div><span class="status {{ 'active' if account.activo else 'pending' }}">{{ 'Votando' if account.activo else 'Pendiente' }}</span></div>
               {% if not account.activo %}
-                <form method="post" action="{{ url_for('activate_account') }}"><input type="hidden" name="email" value="{{ account.email }}"><button class="activate" type="submit">Iniciar a votar</button></form>
+                <form method="post" action="{{ url_for('activate_account') }}"><input type="hidden" name="account_token" value="{{ account.token }}"><button class="activate" type="submit">Iniciar a votar</button></form>
               {% endif %}
             </article>
           {% else %}
@@ -57,6 +57,7 @@
   </main>
   <script>
     const text = (value) => String(value ?? '—');
+    const escapeHtml = (value) => text(value).replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character]);
     const set = (id, value) => { document.getElementById(id).textContent = text(value); };
     async function refreshDashboard() {
       try {
@@ -74,9 +75,11 @@
         status.textContent = data.metrics.paused ? 'Bot pausado: las cuentas activas esperan' : 'Bot activo · actualización automática cada 5 segundos';
         status.classList.toggle('paused', data.metrics.paused);
         set('surveys', data.survey.slugs.join(', ') || 'Sin encuesta');
-        set('targets', Object.values(data.survey.targets).join(', ') || 'Sin concursante');
-        const details = Object.entries(data.metrics.details).map(([mesa, metric]) => `<div class="detail"><strong>${mesa}</strong><span>${metric.votos || 0} votos · ${metric.solicitudes || 0} solicitudes</span></div>`).join('');
-        document.getElementById('details').innerHTML = details || '<p class="muted">No hay mesas activas todavía.</p>';
+        const mesas = Object.entries(data.survey.mesas);
+        set('tables', mesas.length);
+        const details = Object.entries(data.metrics.details).map(([mesa, metric]) => `<div class="detail"><strong>${escapeHtml(mesa)}</strong><span>${metric.votos || 0} votos · ${metric.solicitudes || 0} solicitudes</span></div>`).join('');
+        const participants = mesas.map(([mesa, info]) => `<div class="detail"><strong>${escapeHtml(mesa)}</strong><span>${(info.participantes || []).map(escapeHtml).join(', ') || 'Sin participantes'}</span></div>`).join('');
+        document.getElementById('details').innerHTML = `${details}${participants}` || '<p class="muted">No hay mesas activas todavía.</p>';
       } catch (error) {
         document.getElementById('details').innerHTML = '<p class="muted">Esperando conexión con votabot…</p>';
       }

@@ -6,7 +6,7 @@ votabot.py — Bot de votación TV Azteca (La Granja VIP) · v2.0
   python votabot.py login                       registra cuentas de Google (una vez, con navegador)
   python votabot.py run                         arranca el demonio (vota lo que diga config.json)
   python votabot.py duelos                      vota TODAS las mesas de 'vota' (indefinido)
-  python votabot.py vote "Rafa Mercadante" 10   elige concursante y votos por solicitud
+  python votabot.py vote "Manelyk" 10            elige concursante y votos por solicitud
   python votabot.py report                      manda reporte a Slack AHORA
   python votabot.py off / on                    pausa / reanuda (el proceso sigue vivo)
   python votabot.py status / stats / mesas       estado, contadores y mesas detectadas
@@ -601,7 +601,9 @@ def cmd_run(args):
                     with lock:
                         shared[clave] = {"abierto": abierto, "slug": slug, "mesa": mesa,
                                          "cid": v["configId"], "votes": votes,
-                                         "titulo": titulo, "target": target}
+                                         "titulo": titulo, "target": target,
+                                         "participantes": [c["name"] for c in v["contestants"]
+                                                           if not c.get("deleted")]}
                         m_de(clave)["target"] = target
                     if aviso and aviso_prev.get(clave) != aviso:
                         slack("⚠️ Target no encontrado", f"`{clave}`: {aviso}", color="#e0a800")
@@ -732,7 +734,9 @@ def cmd_run(args):
                                       {"ok": age < 120, "latido_hace": round(age, 1)})
                 ok, err, skip, dt = stats.resumen()
                 with lock:
-                    body = {"pausado": pausa["on"], "mesas": {k: v.get("titulo") for k, v in shared.items()},
+                    body = {"pausado": pausa["on"], "mesas": {
+                                k: {"titulo": v.get("titulo"), "participantes": v.get("participantes", [])}
+                                for k, v in shared.items()},
                             "solicitudes": metricas["solicitudes"], "votos": metricas["votos"],
                             "ok": metricas["ok"], "saltados": skip, "errores": metricas["err"],
                             "conflictos_409": metricas["conflictos"],
@@ -791,7 +795,7 @@ if __name__ == "__main__":
   python votabot.py encuestas
   python votabot.py encuesta vota
   python votabot.py encuesta https://vota.tvazteca.com/config/vota.json --activar
-  python votabot.py vote \"Rafa Mercadante\" 10 --slug vota
+  python votabot.py vote \"Manelyk\" 10 --slug vota
   python votabot.py help vote""",
     )
     sub = ap.add_subparsers(dest="cmd", required=True, title="Comandos")

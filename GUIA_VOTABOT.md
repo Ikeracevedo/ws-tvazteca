@@ -61,7 +61,7 @@ python votabot.py encuesta vota --activar
 pausado. Después define el concursante y reanuda:
 
 ```powershell
-python votabot.py vote "Rafa Mercadante" 10 --slug vota
+python votabot.py vote "Manelyk" 10 --slug vota
 python votabot.py on
 ```
 
@@ -85,13 +85,13 @@ cubrir dos eventos abiertos a la vez.
 ## Configuración recomendada: un concursante, todos los votos
 
 Guarda este contenido completo en `votabot_data/config.json`. Cambia
-`Rafa Mercadante` por el concursante que aparezca en `python votabot.py encuesta vota`.
+`Manelyk` por el concursante que aparezca en `python votabot.py encuesta vota`.
 
 ```json
 {
   "slugs": ["vota"],
   "targets": {
-    "vota": "Rafa Mercadante"
+    "vota": "Manelyk"
   },
   "votos": {
     "vota": 10
@@ -150,7 +150,7 @@ modifica el estado de una encuesta cerrada.
 ```powershell
 python votabot.py encuestas
 python votabot.py encuesta vota --activar
-python votabot.py vote "Rafa Mercadante" 10 --slug vota
+python votabot.py vote "Manelyk" 10 --slug vota
 python votabot.py on
 python votabot.py status
 ```
