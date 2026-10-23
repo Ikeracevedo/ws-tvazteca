@@ -3,29 +3,82 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>votabot · Cuentas</title>
+  <title>tv azteca · votabot</title>
   <style>
-    body { background: #101827; color: #e5e7eb; font-family: system-ui, sans-serif; margin: 0; } main { margin: 48px auto; max-width: 760px; padding: 0 24px; } a { color: #86efac; } .button { background: #22c55e; border-radius: 6px; color: #052e16; display: inline-block; font-weight: 700; padding: 12px 16px; text-decoration: none; } table { border-collapse: collapse; margin-top: 24px; width: 100%; } th, td { border-bottom: 1px solid #374151; padding: 12px 8px; text-align: left; } .success { color: #86efac; } .error { color: #fca5a5; } nav { display: flex; justify-content: space-between; } @media (max-width: 480px) { main { margin: 28px auto; padding: 0 16px; } .button { box-sizing: border-box; text-align: center; width: 100%; } th, td { font-size: 0.9rem; overflow-wrap: anywhere; } }
+    :root { --azul: #193e70; --azul-oscuro: #071a33; --azul-medio: #0d2a50; --verde: #00a859; --amarillo: #ffd100; --rosa: #e31e8c; --texto: #f6f8fc; --muted: #a9bad1; --borde: #254d7d; }
+    * { box-sizing: border-box; } body { background: var(--azul-oscuro); color: var(--texto); font-family: Arial, Helvetica, sans-serif; margin: 0; } header { align-items: center; background: var(--azul); border-bottom: 4px solid var(--amarillo); display: flex; justify-content: space-between; padding: 18px clamp(18px, 4vw, 64px); } .brand { align-items: center; color: white; display: flex; font-size: clamp(1.5rem, 3vw, 2.35rem); font-weight: 800; gap: 10px; letter-spacing: -0.06em; } .signal { align-items: end; display: flex; gap: 3px; height: 33px; transform: skewX(-18deg); } .signal i { border-radius: 12px 12px 4px 4px; display: block; width: 8px; } .signal i:nth-child(1) { background: #00a859; height: 22px; } .signal i:nth-child(2) { background: #00a6d6; height: 29px; } .signal i:nth-child(3) { background: var(--rosa); height: 33px; } .signal i:nth-child(4) { background: var(--amarillo); height: 25px; } .logout { color: white; font-weight: 700; text-decoration: none; } main { margin: 0 auto; max-width: 1180px; padding: 34px 24px 56px; } .hero { align-items: end; display: flex; gap: 20px; justify-content: space-between; margin-bottom: 26px; } h1 { font-size: clamp(1.75rem, 4vw, 3rem); margin: 0; } .eyebrow { color: var(--amarillo); font-size: 0.78rem; font-weight: 800; letter-spacing: 0.13em; margin: 0 0 8px; text-transform: uppercase; } .campaign { background: linear-gradient(110deg, var(--rosa), #f36e21); border-radius: 14px; box-shadow: 0 12px 24px #0005; padding: 18px 22px; text-align: center; } .campaign span { display: block; font-size: 0.78rem; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; } .campaign strong { display: block; font-size: 1.45rem; margin-top: 4px; } .flash { border-radius: 8px; font-weight: 700; margin: 16px 0; padding: 14px; } .success { background: #073c29; color: #a7f3d0; } .error { background: #571d2b; color: #fecdd3; } .grid { display: grid; gap: 16px; grid-template-columns: repeat(4, minmax(0, 1fr)); } .card { background: var(--azul-medio); border: 1px solid var(--borde); border-radius: 14px; min-width: 0; padding: 20px; } .card-label { color: var(--muted); font-size: 0.78rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; } .metric { color: white; font-size: clamp(1.8rem, 4vw, 2.7rem); font-weight: 800; margin-top: 8px; } .accepted .metric { color: #6ee7a8; } .rejected .metric { color: #fda4af; } .sections { display: grid; gap: 20px; grid-template-columns: 1.25fr 1fr; margin-top: 22px; } h2 { font-size: 1.2rem; margin: 0 0 18px; } .summary-line { border-bottom: 1px solid #1f466f; color: var(--muted); padding: 11px 0; } .summary-line strong { color: white; float: right; text-align: right; } .primary { background: var(--verde); border: 0; border-radius: 8px; color: #032212; cursor: pointer; display: inline-block; font: inherit; font-weight: 800; padding: 12px 16px; text-decoration: none; } .account-list { display: grid; gap: 10px; } .account { align-items: center; background: #0a2343; border: 1px solid #1d4773; border-radius: 10px; display: grid; gap: 12px; grid-template-columns: 1fr auto; padding: 14px; } .account-name { font-weight: 800; } .account-email { color: var(--muted); font-size: 0.88rem; overflow-wrap: anywhere; } .status { border-radius: 99px; display: inline-block; font-size: 0.72rem; font-weight: 800; margin-top: 6px; padding: 5px 9px; text-transform: uppercase; } .status.active { background: #064e3b; color: #6ee7b7; } .status.pending { background: #5a3e07; color: #fde68a; } .activate { background: var(--amarillo); border: 0; border-radius: 7px; color: #2e2300; cursor: pointer; font: inherit; font-weight: 800; padding: 10px 12px; } .muted { color: var(--muted); } .live { align-items: center; color: #86efac; display: flex; font-size: 0.82rem; font-weight: 700; gap: 7px; } .live::before { background: #22c55e; border-radius: 50%; content: ''; height: 8px; width: 8px; } .details { margin-top: 16px; } .detail { border-top: 1px solid #1f466f; display: flex; justify-content: space-between; padding: 10px 0; } .detail span:last-child { color: var(--muted); text-align: right; }
+    @media (max-width: 860px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .sections { grid-template-columns: 1fr; } }
+    @media (max-width: 560px) { header { padding: 15px 18px; } .brand { font-size: 1.7rem; } .hero { align-items: stretch; flex-direction: column; } main { padding: 28px 16px 42px; } .grid { grid-template-columns: 1fr 1fr; gap: 10px; } .card { padding: 14px; } .metric { font-size: 1.7rem; } .campaign { padding: 16px; } .campaign strong { font-size: 1.25rem; } .account { grid-template-columns: 1fr; } .activate { width: 100%; } }
   </style>
 </head>
 <body>
+  <header>
+    <div class="brand"><span class="signal"><i></i><i></i><i></i><i></i></span><span>tv azteca</span></div>
+    <a class="logout" href="{{ url_for('logout') }}">Salir</a>
+  </header>
   <main>
-    <nav><strong>votabot · Cuentas</strong><a href="{{ url_for('logout') }}">Salir</a></nav>
-    {% for category, message in get_flashed_messages(with_categories=true) %}
-      <p class="{{ category }}">{{ message }}</p>
-    {% endfor %}
-    <p><a class="button" href="{{ url_for('start_google_login') }}">Registrar cuenta con Google</a></p>
-    <p>Google recibe las credenciales. Este servidor solo guarda la cuenta validada al completar OAuth.</p>
-    <table>
-      <thead><tr><th>Nombre</th><th>Correo</th></tr></thead>
-      <tbody>
-        {% for account in accounts %}
-          <tr><td>{{ account.name or '-' }}</td><td>{{ account.email }}</td></tr>
-        {% else %}
-          <tr><td colspan="2">No hay cuentas registradas.</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    <section class="hero">
+      <div><p class="eyebrow">Centro de votación</p><h1>votabot</h1></div>
+      <div class="campaign"><span>Esta votación es por</span><strong>Manelyk González</strong></div>
+    </section>
+    {% for category, message in get_flashed_messages(with_categories=true) %}<p class="flash {{ category }}">{{ message }}</p>{% endfor %}
+    <div class="grid">
+      <section class="card"><div class="card-label">Cuentas activas</div><div class="metric" id="active-accounts">—</div><div class="muted" id="total-accounts">Actualizando…</div></section>
+      <section class="card"><div class="card-label">Votos enviados</div><div class="metric" id="votes">—</div><div class="muted" id="requests">— solicitudes</div></section>
+      <section class="card accepted"><div class="card-label">Aceptados</div><div class="metric" id="accepted">—</div><div class="muted">Respuestas 200</div></section>
+      <section class="card rejected"><div class="card-label">Rechazados</div><div class="metric" id="rejected">—</div><div class="muted" id="conflicts">— conflictos 409</div></section>
+    </div>
+    <div class="sections">
+      <section class="card">
+        <div class="live">Actualización automática cada 5 segundos</div>
+        <h2 style="margin-top: 16px">Encuesta actual</h2>
+        <div class="summary-line">Encuestas <strong id="surveys">—</strong></div>
+        <div class="summary-line">Concursante <strong id="targets">—</strong></div>
+        <div class="details" id="details"><p class="muted">Esperando métricas del bot…</p></div>
+      </section>
+      <section class="card">
+        <h2>Cuentas</h2>
+        <p><a class="primary" href="{{ url_for('start_google_login') }}">Registrar cuenta con Google</a></p>
+        <div class="account-list">
+          {% for account in accounts %}
+            <article class="account">
+              <div><div class="account-name">{{ account.name or 'Sin nombre' }}</div><div class="account-email">{{ account.email }}</div><span class="status {{ 'active' if account.activo else 'pending' }}">{{ 'Votando' if account.activo else 'Pendiente' }}</span></div>
+              {% if not account.activo %}
+                <form method="post" action="{{ url_for('activate_account') }}"><input type="hidden" name="email" value="{{ account.email }}"><button class="activate" type="submit">Iniciar a votar</button></form>
+              {% endif %}
+            </article>
+          {% else %}
+            <p class="muted">Registra una cuenta de Google para comenzar.</p>
+          {% endfor %}
+        </div>
+      </section>
+    </div>
   </main>
+  <script>
+    const text = (value) => String(value ?? '—');
+    const set = (id, value) => { document.getElementById(id).textContent = text(value); };
+    async function refreshDashboard() {
+      try {
+        const response = await fetch('{{ url_for("dashboard_data") }}', { cache: 'no-store' });
+        if (!response.ok) throw new Error('dashboard no disponible');
+        const data = await response.json();
+        set('active-accounts', data.accounts.active);
+        set('total-accounts', `${data.accounts.total} registradas`);
+        set('votes', data.metrics.votes.toLocaleString('es-MX'));
+        set('requests', `${data.metrics.requests.toLocaleString('es-MX')} solicitudes`);
+        set('accepted', data.metrics.accepted.toLocaleString('es-MX'));
+        set('rejected', data.metrics.rejected.toLocaleString('es-MX'));
+        set('conflicts', `${data.metrics.conflicts.toLocaleString('es-MX')} conflictos 409`);
+        set('surveys', data.survey.slugs.join(', ') || 'Sin encuesta');
+        set('targets', Object.values(data.survey.targets).join(', ') || 'Sin concursante');
+        const details = Object.entries(data.metrics.details).map(([mesa, metric]) => `<div class="detail"><strong>${mesa}</strong><span>${metric.votos || 0} votos · ${metric.solicitudes || 0} solicitudes</span></div>`).join('');
+        document.getElementById('details').innerHTML = details || '<p class="muted">No hay mesas activas todavía.</p>';
+      } catch (error) {
+        document.getElementById('details').innerHTML = '<p class="muted">Esperando conexión con votabot…</p>';
+      }
+    }
+    refreshDashboard();
+    setInterval(refreshDashboard, 5000);
+  </script>
 </body>
 </html>

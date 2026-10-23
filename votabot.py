@@ -270,6 +270,7 @@ def asegurar_personas(accs):
     cambiado = False
     for a in accs:
         if "persona" not in a: a["persona"] = nueva_persona(); cambiado = True
+        if "activo" not in a: a["activo"] = True; cambiado = True
     if cambiado: save_json(ACCOUNTS, accs)
     return accs
 
@@ -544,7 +545,7 @@ def cmd_run(args):
     save_config(cfg)
 
     accs = asegurar_personas(load_json(ACCOUNTS, []))
-    if not accs: sys.exit("No hay cuentas. Corre: python votabot.py login")
+    if not accs: print("Sin cuentas activas. El panel web puede agregar cuentas mientras votabot sigue corriendo.")
 
     stop, stats = threading.Event(), Stats()
     lock = threading.Lock()
@@ -559,6 +560,15 @@ def cmd_run(args):
         d = metricas["mesas"].setdefault(mesa, {"solicitudes": 0, "votos": 0, "err": 0, "conflictos": 0, "target": None})
         return d
 
+    def recargar_cuentas():
+        try:
+            nuevas = asegurar_personas(load_json(ACCOUNTS, []))
+        except Exception as e:
+            print("[cuentas]", str(e)[:80])
+            return
+        with lock:
+            accs[:] = nuevas
+
     # ---- monitor: vigila configs, targets y pausa
     def monitor():
         s = new_session()
@@ -566,6 +576,7 @@ def cmd_run(args):
         aviso_prev = {}
         while not stop.is_set():
             cfg = load_config()
+            recargar_cuentas()
             with lock: pausa["on"] = bool(cfg.get("pausado"))
             slugs = cfg.get("slugs") or ["vota"]
             vistas = set()
@@ -596,9 +607,10 @@ def cmd_run(args):
                         slack("⚠️ Target no encontrado", f"`{clave}`: {aviso}", color="#e0a800")
                     aviso_prev[clave] = aviso
                     if abierto and not abierto_prev.get(clave):
-                        n = max(1, min(int(cfg["workers"]), len(accs)))
+                        with lock:
+                            activas = sum(1 for cuenta in accs if cuenta.get("activo", True))
                         slack("🟢 VOTACIÓN INICIADA", f"*{titulo}*\n`{clave}`", color="#2eb886",
-                              campos=[("Concursante", str(target)), ("Cuentas", str(len(accs))),
+                              campos=[("Concursante", str(target)), ("Cuentas activas", str(activas)),
                                       ("Workers", str(n)), ("Delay", f"{cfg['delay_min']}-{cfg['delay_max']}s")])
                     abierto_prev[clave] = abierto
                 # mesas que ya no existen
@@ -613,23 +625,32 @@ def cmd_run(args):
             stop.wait(load_config()["poll_status_every"])
 
     # ---- worker
-    def trabajador(idx, cuentas):
+    def trabajador(idx):
         sesion = new_session()
         time.sleep(random.uniform(0, 8))
         contador = {}
         while not stop.is_set():
-            if pausa["on"]:
+            with lock:
+                pausado = pausa["on"]
+            if pausado:
                 stop.wait(3); continue
             with lock:
                 objetivos = [(k, dict(d)) for k, d in shared.items()
                              if d.get("abierto") and d.get("cid") and d.get("votes")]
+                cuentas = [dict(cuenta) for posicion, cuenta in enumerate(accs)
+                           if cuenta.get("activo", True) and posicion % n == idx]
             if not objetivos:
+                stop.wait(3); continue
+            if not cuentas:
                 stop.wait(3); continue
             for a in cuentas:
                 if stop.is_set(): return
                 for clave, d in objetivos:
-                    if pausa["on"] or stop.is_set(): break
-                    if not shared.get(clave, {}).get("abierto"): continue
+                    with lock:
+                        pausado = pausa["on"]
+                        abierta = shared.get(clave, {}).get("abierto")
+                    if pausado or stop.is_set(): break
+                    if not abierta: continue
                     per = a.get("persona", {})
                     sesion.headers["User-Agent"] = per.get("ua", UA_POOL[0])
                     sesion.headers["Accept-Language"] = per.get("lang", LANGS[0])
@@ -723,13 +744,21 @@ def cmd_run(args):
         try: ThreadingHTTPServer(("0.0.0.0", port), H).serve_forever()
         except Exception as e: print("[http]", e)
 
-    n = max(1, min(int(load_config()["workers"]), len(accs)))
-    hilos = [threading.Thread(target=monitor, daemon=True),
-             threading.Thread(target=guardador, daemon=True),
-             threading.Thread(target=reportador, daemon=True),
-             threading.Thread(target=http_server, daemon=True)]
+    def hilo_protegido(nombre, funcion, *argumentos):
+        while not stop.is_set():
+            try:
+                funcion(*argumentos)
+            except Exception as e:
+                print(f"[{nombre}]", str(e)[:160])
+                stop.wait(3)
+
+    n = max(1, int(load_config()["workers"]))
+    hilos = [threading.Thread(target=hilo_protegido, args=("monitor", monitor), daemon=True),
+             threading.Thread(target=hilo_protegido, args=("guardador", guardador), daemon=True),
+             threading.Thread(target=hilo_protegido, args=("reportador", reportador), daemon=True),
+             threading.Thread(target=hilo_protegido, args=("http", http_server), daemon=True)]
     for i in range(n):
-        hilos.append(threading.Thread(target=trabajador, args=(i, accs[i::n]), daemon=True))
+        hilos.append(threading.Thread(target=hilo_protegido, args=(f"worker-{i + 1}", trabajador, i), daemon=True))
     for h in hilos: h.start()
 
     slack("🚀 votabot arrancado",

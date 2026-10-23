@@ -14,7 +14,7 @@ import requests
 from flask import Flask, abort, flash, redirect, render_template, request, session, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from votabot import ACCOUNTS, asegurar_personas, exchange_for_im, load_json, save_json
+from votabot import ACCOUNTS, METRICS, asegurar_personas, exchange_for_im, load_config, load_json, save_json, slack
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -88,12 +88,14 @@ def upsert_account(access_token):
         raise RuntimeError("Google no devolvio el correo de la cuenta")
     with accounts_lock:
         accounts = asegurar_personas(load_json(ACCOUNTS, []))
+        existing = next((account for account in accounts if account.get("email") == email), None)
         accounts = [account for account in accounts if account.get("email") != email]
         accounts.append({
             "email": email,
             "name": profile.get("name", ""),
             "im": im,
             "fp": hashlib.md5(im.encode()).hexdigest(),
+            "activo": existing.get("activo", True) if existing else False,
         })
         accounts = asegurar_personas(accounts)
         save_json(ACCOUNTS, accounts)
@@ -133,8 +135,60 @@ def logout():
 @app.get("/")
 @require_admin
 def dashboard():
-    accounts = load_json(ACCOUNTS, [])
+    accounts = asegurar_personas(load_json(ACCOUNTS, []))
     return render_template("dashboard.html", accounts=accounts)
+
+
+@app.post("/accounts/activate")
+@require_admin
+def activate_account():
+    email = request.form.get("email", "")
+    if not email:
+        abort(400, "Falta la cuenta.")
+    with accounts_lock:
+        accounts = asegurar_personas(load_json(ACCOUNTS, []))
+        account = next((item for item in accounts if item.get("email") == email), None)
+        if not account:
+            abort(404, "Cuenta no encontrada.")
+        account["activo"] = True
+        save_json(ACCOUNTS, accounts)
+    slack("✅ Nueva cuenta activada", f"Ya estamos trabajando con la nueva cuenta: *{email}*.", color="#00a859")
+    flash(f"{email} quedó activa. Votabot la incorpora en el siguiente ciclo.", "success")
+    return redirect(url_for("dashboard"))
+
+
+@app.get("/api/dashboard")
+@require_admin
+def dashboard_data():
+    accounts = load_json(ACCOUNTS, [])
+    active_accounts = sum(1 for account in accounts if account.get("activo", True))
+    cfg = load_config()
+    try:
+        response = requests.get("http://votabot:8080/", timeout=3)
+        response.raise_for_status()
+        bot = response.json()
+    except Exception:
+        metrics = load_json(METRICS, {})
+        bot = {
+            "solicitudes": metrics.get("solicitudes", 0),
+            "votos": metrics.get("votos", 0),
+            "ok": metrics.get("ok", 0),
+            "errores": metrics.get("err", 0),
+            "conflictos_409": metrics.get("conflictos", 0),
+            "detalle": metrics.get("mesas", {}),
+        }
+    return {
+        "accounts": {"total": len(accounts), "active": active_accounts},
+        "survey": {"slugs": cfg.get("slugs", []), "targets": cfg.get("targets", {})},
+        "metrics": {
+            "requests": bot.get("solicitudes", 0),
+            "votes": bot.get("votos", 0),
+            "accepted": bot.get("ok", 0),
+            "rejected": bot.get("errores", 0) + bot.get("conflictos_409", 0),
+            "conflicts": bot.get("conflictos_409", 0),
+            "details": bot.get("detalle", {}),
+        },
+    }
 
 
 @app.get("/accounts/google")

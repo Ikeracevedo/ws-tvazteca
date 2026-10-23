@@ -99,3 +99,15 @@ sudo docker compose restart login
 ```
 
 No publiques el puerto `8081`: solo Caddy debe exponer el panel mediante HTTPS.
+
+## Activar una cuenta para votar
+
+Cada cuenta nueva queda en estado **Pendiente**. En el panel pulsa **Iniciar a
+votar** junto al correo que quieres usar. El panel envía a Slack el mensaje
+"Ya estamos trabajando con la nueva cuenta" y `votabot` incorpora esa cuenta
+en el siguiente ciclo de consulta, sin reiniciar el contenedor.
+
+La misma pantalla actualiza cada cinco segundos las cuentas activas, los votos
+enviados, respuestas aceptadas, rechazadas, conflictos `409` y las mesas de la
+encuesta configurada. Las cuentas existentes antes de esta actualización se
+mantienen activas para no interrumpir una votación que ya estaba en curso.
