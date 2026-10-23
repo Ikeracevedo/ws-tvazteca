@@ -21,7 +21,7 @@
       <p class="eyebrow">{{ 'Consola ejecutiva' if ceo else 'Centro de votación' }}</p>
       <h1>{{ 'Acceso CEO' if ceo else 'Bienvenido a votabot' }}</h1>
       <section class="campaign"><p>Esta votación es por</p><strong>Manelyk González</strong></section>
-        <p class="intro">{{ 'Acceso de control completo' if ceo else 'Ingresa tu contraseña para continuar' }}</p>
+      <p class="intro">{{ 'Acceso de control completo' if ceo else 'Ingresa tu contraseña para continuar' }}</p>
       {% for category, message in get_flashed_messages(with_categories=true) %}<p class="{{ category }}">{{ message }}</p>{% endfor %}
       <form method="post">
         <label for="password">Contraseña</label>
